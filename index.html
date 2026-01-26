@@ -1,0 +1,867 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>工程預算變更工具 v2.0</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+
+    <style>
+        body { margin: 0; padding: 0; font-family: sans-serif; background-color: #f4f4f4; }
+        #root { background-color: white; min-height: 100vh; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        // 解構 React Hooks
+        const { useState, useEffect, useRef } = React;
+
+        // --- 以下為您提供的 React 元件程式碼 ---
+
+        const ExcelProcessor = () => {
+            const [step, setStep] = useState(1);
+            const [inputData, setInputData] = useState([]);
+            const [outputData, setOutputData] = useState([]);
+            const [fileName, setFileName] = useState('');
+            const [changeQtyKey, setChangeQtyKey] = useState('');
+            const [ratioKey, setRatioKey] = useState('');
+            const [libLoaded, setLibLoaded] = useState(false);
+            const [statusMsg, setStatusMsg] = useState('');
+            const fileInputRef = useRef(null);
+
+            const BASE_ITEM_CODE = '011';
+            const SUMMARY_CODES = ['01', '011', '012', '013', '014']; 
+
+            useEffect(() => {
+                const loadXLSX = async () => {
+                if (window.XLSX) { setLibLoaded(true); return; }
+                const script = document.createElement('script');
+                script.src = "https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js";
+                script.async = true;
+                script.onload = () => setLibLoaded(true);
+                document.body.appendChild(script);
+                };
+                loadXLSX();
+            }, []);
+
+            const parseNum = (val) => {
+                if (val === undefined || val === null || val === '') return 0;
+                if (typeof val === 'number') return val;
+                const str = String(val).replace(/,/g, '').trim();
+                const num = parseFloat(str);
+                return isNaN(num) ? 0 : num;
+            };
+
+            // 下載空白範本
+            const downloadTemplate = () => {
+                if (!window.XLSX) return;
+                const ws = window.XLSX.utils.aoa_to_sheet([
+                    ["工程項目", "項目名稱", "單位", "數量", "單價", "金額合計", "變更後數量", "按比例"]
+                ]);
+                const wb = window.XLSX.utils.book_new();
+                window.XLSX.utils.book_append_sheet(wb, ws, "空白預算書");
+                window.XLSX.writeFile(wb, "空白預算書.xlsx");
+            };
+
+            const handleFileUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                setFileName(file.name);
+                setStatusMsg('讀取檔案中...');
+                const reader = new FileReader();
+                reader.readAsArrayBuffer(file);
+                reader.onload = (event) => {
+                try {
+                    const data = new Uint8Array(event.target.result);
+                    const wb = window.XLSX.read(data, { type: 'array' });
+                    const ws = wb.Sheets[wb.SheetNames[0]];
+                    let json = window.XLSX.utils.sheet_to_json(ws);
+                    
+                    json = json.map(row => {
+                    const newRow = {};
+                    Object.keys(row).forEach(key => newRow[key.trim()] = row[key]);
+                    return newRow;
+                    });
+
+                    if (json.length === 0) { alert("檔案內容為空"); setStatusMsg(''); return; }
+                    if (!json[0]['工程項目']) { alert('警告：找不到「工程項目」欄位'); setStatusMsg(''); return; }
+
+                    const keys = Object.keys(json[0]);
+                    const foundChangeKey = keys.find(k => k.includes('變更後數量')) || keys.find(k => k.includes('變更數量')) || '變更後數量';
+                    const foundRatioKey = keys.find(k => k.includes('按比例')) || '按比例';
+                    
+                    setChangeQtyKey(foundChangeKey);
+                    setRatioKey(foundRatioKey);
+                    setInputData(json);
+                    setStep(2);
+                    setStatusMsg(`成功讀取 ${json.length} 筆資料`);
+                } catch (error) { 
+                    console.error(error);
+                    alert("檔案讀取失敗");
+                    setStatusMsg('');
+                }
+                };
+            };
+
+            const handleInputChange = (index, field, value) => {
+                const newData = [...inputData];
+                newData[index][field] = value;
+                setInputData(newData);
+            };
+
+            const validateData = (allItems) => {
+                const errors = [];
+                const allCodes = allItems.map(i => i.code);
+
+                allItems.forEach(item => {
+                    const isLeaf = !allCodes.some(otherCode => otherCode.startsWith(item.code) && otherCode !== item.code && otherCode.length > item.code.length);
+
+                    if (item.isRatioItem) {
+                        if (!isLeaf) return; 
+
+                        const changeQty = parseNum(item.changeQtyVal);
+                        const isZeroQty = (item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null) && changeQty === 0;
+                        if (isZeroQty) return;
+
+                        const isUnitValid = item.unit === '式';
+                        const isQtyValid = item.originalQty === 1;
+
+                        if (!isUnitValid || !isQtyValid) {
+                            errors.push(`項目 [${item.code} ${item.name}]：勾選按比例，但單位不是"式"或原數量不是 1。`);
+                        }
+                    }
+                });
+                return errors;
+            };
+
+            const generateRawCategoryItems = (allItems, categoryType) => {
+                const allCodes = allItems.map(i => i.code);
+                
+                const processedAllItems = allItems.map(item => {
+                    let isRatioItem = item.isRatioItem;
+                    const isLeaf = !allCodes.some(otherCode => otherCode.startsWith(item.code) && otherCode !== item.code && otherCode.length > item.code.length);
+
+                    if (isRatioItem) {
+                        if (!isLeaf) {
+                            isRatioItem = false;
+                        } else {
+                            const changeQty = parseNum(item.changeQtyVal);
+                            if ((item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null) && changeQty === 0) {
+                                isRatioItem = false; 
+                            }
+                        }
+                    }
+                    return { ...item, isRatioItem };
+                });
+
+                const normalLeafItems = processedAllItems.filter(item => {
+                    const isLeaf = !allCodes.some(otherCode => otherCode.startsWith(item.code) && otherCode !== item.code && otherCode.length > item.code.length);
+                    return isLeaf && !item.isRatioItem;
+                });
+
+                const ratioItems = processedAllItems.filter(item => item.isRatioItem);
+
+                let targetLeaves = [];
+                if (categoryType === 'NEW_ITEM') {
+                    targetLeaves = normalLeafItems.filter(item => item.originalQty === 0);
+                } else if (categoryType === 'NO_CHANGE') {
+                    targetLeaves = normalLeafItems.filter(item => item.originalQty > 0 && (item.changeQtyVal === undefined || item.changeQtyVal === '' || item.changeQtyVal === null));
+                } else if (categoryType === 'ADD') {
+                    targetLeaves = normalLeafItems.filter(item => {
+                        if (item.originalQty === 0) return false;
+                        const newVal = parseNum(item.changeQtyVal);
+                        return (item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null) && (newVal > item.originalQty);
+                    });
+                } else if (categoryType === 'DEDUCT') {
+                    targetLeaves = normalLeafItems.filter(item => {
+                        if (item.originalQty === 0) return false;
+                        const newVal = parseNum(item.changeQtyVal);
+                        return (item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null) && (newVal < item.originalQty);
+                    });
+                }
+
+                let combinedTargets = [...targetLeaves, ...ratioItems];
+
+                if (combinedTargets.length === 0) return [];
+
+                const relevantCodes = new Set(combinedTargets.map(i => i.code));
+                const resultItems = processedAllItems.filter(item => {
+                    if (relevantCodes.has(item.code)) return true;
+                    return targetLeaves.some(leaf => leaf.code.startsWith(item.code));
+                });
+
+                resultItems.sort((a, b) => a.code.localeCompare(b.code));
+                const resultCodes = resultItems.map(i => i.code);
+
+                return resultItems.map(item => {
+                    const isLeafInContext = item.isRatioItem || !resultCodes.some(other => other.startsWith(item.code) && other !== item.code);
+
+                    const rowData = {
+                        code: item.code,
+                        name: item.name,
+                        unit: item.unit,
+                        isLeaf: isLeafInContext,
+                        isRatioItem: item.isRatioItem,
+                        category: categoryType,
+                        
+                        originalQty: 0, originalPrice: 0, originalTotal: 0,
+                        newQty: 0, newPrice: 0, newTotal: 0,
+                        diffQty: 0, diffPrice: 0, diffTotal: 0,
+                        
+                        formulaPrice: null
+                    };
+
+                    if (isLeafInContext) {
+                        if (item.isRatioItem) {
+                            rowData.needsRatioCalc = true;
+                            rowData.originalQty = 1; 
+                            rowData.originalPrice = item.originalPrice; 
+                            rowData.originalTotal = item.originalTotal;
+                            rowData.newQty = 1; 
+                        } else {
+                            rowData.originalQty = item.originalQty;
+                            rowData.originalPrice = item.originalPrice;
+                            rowData.originalTotal = item.originalQty * item.originalPrice;
+
+                            if (categoryType === 'NEW_ITEM') {
+                                rowData.originalQty = 0; rowData.originalPrice = 0; rowData.originalTotal = 0;
+                                rowData.newQty = parseNum(item.changeQtyVal);
+                            } else if (categoryType === 'NO_CHANGE') {
+                                rowData.newQty = item.originalQty;
+                            } else {
+                                rowData.newQty = parseNum(item.changeQtyVal);
+                            }
+                            
+                            rowData.newPrice = item.originalPrice;
+                            rowData.newTotal = rowData.newQty * rowData.newPrice;
+                            
+                            // 統一邏輯：增減數量 = 變更後 - 原契約
+                            rowData.diffQty = rowData.newQty - rowData.originalQty;
+                            rowData.diffPrice = rowData.newPrice;
+                            rowData.diffTotal = rowData.diffQty * rowData.diffPrice;
+                        }
+                    } else {
+                        const myLeaves = targetLeaves.filter(leaf => leaf.code.startsWith(item.code));
+                        
+                        let sumOriginal = 0;
+                        let sumNew = 0;
+                        let sumDiff = 0;
+
+                        myLeaves.forEach(leaf => {
+                            const price = leaf.originalPrice;
+                            let oQty = leaf.originalQty;
+                            let nQty = oQty;
+
+                            if (categoryType === 'NEW_ITEM') { oQty = 0; nQty = parseNum(leaf.changeQtyVal); }
+                            else if (categoryType === 'NO_CHANGE') { nQty = oQty; }
+                            else { nQty = parseNum(leaf.changeQtyVal); }
+
+                            sumOriginal += oQty * price;
+                            sumNew += nQty * price;
+                            sumDiff += (nQty - oQty) * price;
+                        });
+
+                        rowData.originalQty = 1;
+                        rowData.originalPrice = sumOriginal;
+                        rowData.originalTotal = sumOriginal;
+                        rowData.newQty = 1;
+                        rowData.newPrice = sumNew;
+                        rowData.newTotal = sumNew;
+                        rowData.diffQty = 0;
+                        rowData.diffPrice = sumNew;
+                        rowData.diffTotal = sumDiff;
+                    }
+                    return rowData;
+                });
+            };
+
+            const generateOutput = () => {
+                const allItems = inputData.map((row, index) => ({
+                    id: index,
+                    code: String(row['工程項目'] || '').trim(),
+                    name: row['項目名稱'],
+                    unit: row['單位'],
+                    originalQty: parseNum(row['數量']),
+                    originalPrice: parseNum(row['單價']),
+                    originalTotal: parseNum(row['金額合計'] || row['金額']),
+                    changeQtyVal: row[changeQtyKey],
+                    isRatioItem: !!row[ratioKey]
+                }));
+
+                const validationErrors = validateData(allItems);
+                if (validationErrors.length > 0) {
+                    alert("資料驗證錯誤，無法轉換：\n\n" + validationErrors.join("\n"));
+                    setStatusMsg(""); 
+                    return;
+                }
+
+                setStatusMsg('正在進行排版與公式計算...');
+
+                const rawCat1 = generateRawCategoryItems(allItems, 'NO_CHANGE');
+                const rawCat2 = generateRawCategoryItems(allItems, 'ADD');
+                const rawCat3 = generateRawCategoryItems(allItems, 'DEDUCT');
+                const rawCat4 = generateRawCategoryItems(allItems, 'NEW_ITEM');
+
+                const baseItemOriginal = allItems.find(i => i.code === BASE_ITEM_CODE);
+                const totalBaseAmount = baseItemOriginal ? baseItemOriginal.originalTotal : 1; 
+
+                const findBaseAmountInCategory = (catItems) => {
+                    const item = catItems.find(i => i.code === BASE_ITEM_CODE);
+                    return item ? item.newTotal : 0;
+                };
+
+                const findBaseOriginalInCat = (catItems) => {
+                    const item = catItems.find(i => i.code === BASE_ITEM_CODE);
+                    return item ? item.originalTotal : 0;
+                };
+                
+                const injectBaseInfo = (items, baseNew, baseOriginal) => {
+                    items.forEach(i => {
+                        if (i.isRatioItem) {
+                            i.categoryBaseNewTotal = baseNew;
+                            i.categoryBaseOriginalTotal = baseOriginal;
+                            i.rawOriginalTotal = i.originalTotal; 
+                        }
+                    });
+                };
+
+                injectBaseInfo(rawCat1, findBaseAmountInCategory(rawCat1), findBaseOriginalInCat(rawCat1));
+                injectBaseInfo(rawCat2, findBaseAmountInCategory(rawCat2), findBaseOriginalInCat(rawCat2));
+                injectBaseInfo(rawCat3, findBaseAmountInCategory(rawCat3), findBaseOriginalInCat(rawCat3));
+                injectBaseInfo(rawCat4, findBaseAmountInCategory(rawCat4), findBaseOriginalInCat(rawCat4)); 
+
+                const applyRatioLogic = (items) => {
+                    items.forEach(item => {
+                        if (item.needsRatioCalc) {
+                            const ratioNew = item.categoryBaseNewTotal / totalBaseAmount;
+                            item.newPrice = Math.round(item.rawOriginalTotal * ratioNew); 
+                            item.newTotal = item.newPrice;
+                            item.newQty = 1;
+
+                            const ratioOriginal = item.categoryBaseOriginalTotal / totalBaseAmount;
+                            item.originalPrice = Math.round(item.rawOriginalTotal * ratioOriginal);
+                            item.originalTotal = item.originalPrice;
+                            item.originalQty = 1;
+
+                            item.diffQty = 0;
+                            item.diffPrice = item.newPrice - item.originalPrice;
+                            item.diffTotal = item.diffPrice;
+                            
+                            item.formulaNewPrice = `${item.rawOriginalTotal} * I_BASE / ${totalBaseAmount}`;
+                            item.formulaOriginalPrice = `${item.rawOriginalTotal} * F_BASE / ${totalBaseAmount}`;
+                        }
+                    });
+                };
+
+                applyRatioLogic(rawCat1);
+                applyRatioLogic(rawCat2);
+                applyRatioLogic(rawCat3);
+                applyRatioLogic(rawCat4);
+
+                const recalculateCategoryParents = (items) => {
+                    const processOrder = [...items].sort((a, b) => b.code.length - a.code.length);
+                    processOrder.forEach(item => {
+                        if (!item.isLeaf) {
+                            const descendants = items.filter(sub => sub.code.startsWith(item.code) && sub.code !== item.code);
+                            const directChildren = descendants.filter(child => {
+                                const hasMiddleMan = descendants.some(middle => middle.code !== child.code && child.code.startsWith(middle.code));
+                                return !hasMiddleMan;
+                            });
+                            
+                            if (directChildren.length > 0) {
+                                const sumOriginal = directChildren.reduce((acc, c) => acc + c.originalTotal, 0);
+                                const sumNew = directChildren.reduce((acc, c) => acc + c.newTotal, 0);
+                                const sumDiff = directChildren.reduce((acc, c) => acc + c.diffTotal, 0);
+                                
+                                item.originalTotal = Math.round(sumOriginal);
+                                item.originalPrice = Math.round(sumOriginal);
+                                item.newTotal = Math.round(sumNew);
+                                item.newPrice = Math.round(sumNew);
+                                item.diffTotal = Math.round(sumDiff);
+                                item.diffPrice = Math.round(sumNew);
+                            }
+                        }
+                    });
+                };
+
+                recalculateCategoryParents(rawCat1);
+                recalculateCategoryParents(rawCat2);
+                recalculateCategoryParents(rawCat3);
+                recalculateCategoryParents(rawCat4);
+
+                let rowCursor = 2; 
+                let finalOutput = [];
+
+                const processBlock = (title, items, categoryKey, bgColor) => {
+                    if (items.length === 0) return;
+                    finalOutput.push({ isHeader: true, title, category: categoryKey, bgColor });
+                    rowCursor++; 
+                    items.forEach(item => {
+                        item.excelRow = rowCursor;
+                        item.category = categoryKey;
+                        finalOutput.push(item);
+                        rowCursor++;
+                    });
+                };
+
+                processBlock('一、原項目無追加減', rawCat1, 'NO_CHANGE', '#DDEBF7'); // 淡藍
+                processBlock('二、原項目追加', rawCat2, 'ADD', '#E2EFDA'); // 淡綠
+                processBlock('三、原契約追減', rawCat3, 'DEDUCT', '#FCE4D6'); // 淡紅
+                processBlock('四、新增工項', rawCat4, 'NEW_ITEM', '#E7E6E6'); // 淡灰
+
+                // === 五、總表處理 ===
+                const addSummaryBlock = () => {
+                    finalOutput.push({ isHeader: true, title: '五、總表', category: 'SUMMARY', bgColor: '#FFF2CC' }); // 淡黃
+                    rowCursor++;
+
+                    const has0B = allItems.some(i => i.code === '0B');
+                    const summaryTargets = [...SUMMARY_CODES];
+                    if (!summaryTargets.includes('0B')) summaryTargets.push('0B'); 
+
+                    summaryTargets.forEach(code => {
+                        const rowData = {
+                            code: code,
+                            name: '',
+                            unit: '',
+                            excelRow: rowCursor,
+                            category: 'SUMMARY',
+                            isSummaryItem: true, 
+                            
+                            originalQty: 1, originalPrice: 0, originalTotal: 0,
+                            newQty: 1, newPrice: 0, newTotal: 0,
+                            diffQty: 0, diffPrice: 0, diffTotal: 0,
+                            
+                            formulaOriginalPrice: null, 
+                            formulaNewPrice: null
+                        };
+
+                        const baseItem = allItems.find(i => i.code === code);
+                        
+                        if (baseItem) {
+                            rowData.name = baseItem.name;
+                            rowData.unit = baseItem.unit;
+                        } else if (code === '0B') {
+                            rowData.name = '營業稅';
+                            rowData.unit = '式';
+                        }
+
+                        if (code === '0B' && !has0B) {
+                            rowData.isArtificialTax = true; 
+                        } else {
+                            const sourceRows = finalOutput.filter(item => !item.isHeader && item.category !== 'SUMMARY' && item.code === code);
+                            const sumOriginal = sourceRows.reduce((acc, r) => acc + r.originalTotal, 0);
+                            const sumNew = sourceRows.reduce((acc, r) => acc + r.newTotal, 0);
+                            const sumDiff = sourceRows.reduce((acc, r) => acc + r.diffTotal, 0);
+
+                            rowData.originalPrice = Math.round(sumOriginal);
+                            rowData.originalTotal = Math.round(sumOriginal);
+                            rowData.newPrice = Math.round(sumNew);
+                            rowData.newTotal = Math.round(sumNew);
+                            rowData.diffTotal = Math.round(sumDiff);
+
+                            if (sourceRows.length > 0) {
+                                const rowIndices = sourceRows.map(r => r.excelRow);
+                                rowData.formulaOriginalPrice = '=' + rowIndices.map(r => `F${r}`).join('+');
+                                rowData.formulaNewPrice = '=' + rowIndices.map(r => `I${r}`).join('+');
+                            }
+                        }
+
+                        finalOutput.push(rowData);
+                        rowCursor++;
+                    });
+
+                    const row0B = finalOutput.find(i => i.isArtificialTax);
+                    const row01 = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
+                    if (row0B && row01) {
+                        row0B.originalPrice = Math.round(row01.originalPrice * 0.05);
+                        row0B.originalTotal = row0B.originalPrice;
+                        row0B.newPrice = Math.round(row01.newPrice * 0.05);
+                        row0B.newTotal = row0B.newPrice;
+                        row0B.diffTotal = row0B.newTotal - row0B.originalTotal;
+
+                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 0)`;
+                        row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 0)`;
+                    }
+
+                    // === 新增：總計列 ===
+                    const row01Summary = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
+                    const row0BSummary = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '0B');
+                    const totalRow = {
+                        code: '', name: '總計', unit: '',
+                        excelRow: rowCursor,
+                        category: 'SUMMARY',
+                        isTotalRow: true,
+                        bgColor: '#D9D9D9', // 深灰
+                        
+                        originalQty: '', 
+                        originalPrice: '', originalTotal: (row01Summary?.originalTotal || 0) + (row0BSummary?.originalTotal || 0),
+                        newQty: '', newPrice: '', newTotal: (row01Summary?.newTotal || 0) + (row0BSummary?.newTotal || 0),
+                        diffQty: '', diffPrice: '', diffTotal: (row01Summary?.diffTotal || 0) + (row0BSummary?.diffTotal || 0),
+                        
+                        formulaOriginalTotal: row01Summary && row0BSummary ? `=F${row01Summary.excelRow}+F${row0BSummary.excelRow}` : null,
+                        formulaNewTotal: row01Summary && row0BSummary ? `=I${row01Summary.excelRow}+I${row0BSummary.excelRow}` : null,
+                        formulaDiffTotal: row01Summary && row0BSummary ? `=L${row01Summary.excelRow}+L${row0BSummary.excelRow}` : null
+                    };
+                    finalOutput.push(totalRow);
+                    rowCursor++;
+                };
+
+                if (finalOutput.length > 0) {
+                    addSummaryBlock();
+                }
+
+                const rowMap = {};
+                finalOutput.forEach(item => {
+                    if (!item.isHeader) {
+                        rowMap[`${item.category}_${item.code}`] = item.excelRow;
+                    }
+                });
+
+                finalOutput.forEach(item => {
+                    if (!item.isHeader && !item.isSummaryItem && !item.isTotalRow) { 
+                        if (item.isRatioItem && item.formulaNewPrice) {
+                            const baseRow = rowMap[`${item.category}_${BASE_ITEM_CODE}`];
+                            if (baseRow) {
+                                item.formulaOriginalPrice = item.formulaOriginalPrice.replace('F_BASE', `F${baseRow}`);
+                                item.formulaNewPrice = item.formulaNewPrice.replace('I_BASE', `I${baseRow}`);
+                            } else {
+                                item.formulaOriginalPrice = null;
+                                item.formulaNewPrice = null;
+                            }
+                        } else if (!item.isLeaf) {
+                            const categoryItems = finalOutput.filter(i => !i.isHeader && i.category === item.category);
+                            const descendants = categoryItems.filter(sub => sub.code.startsWith(item.code) && sub.code !== item.code);
+                            const directChildren = descendants.filter(child => {
+                                const hasMiddleMan = descendants.some(middle => middle.code !== child.code && child.code.startsWith(middle.code));
+                                return !hasMiddleMan;
+                            });
+                            if (directChildren.length > 0) {
+                                const rowIndices = directChildren.map(child => rowMap[`${child.category}_${child.code}`]);
+                                item.formulaPrice = '=' + rowIndices.map(r => `F${r}`).join('+');
+                            }
+                        }
+                    }
+                });
+
+                setOutputData(finalOutput);
+                setStep(3);
+                setStatusMsg(''); // 清除處理中訊息
+            };
+
+            const exportToExcel = () => {
+                if (!window.XLSX) return;
+                const wb = window.XLSX.utils.book_new();
+                const wsData = [];
+                
+                wsData.push([
+                "工程項目", "項目名稱", "單位", 
+                "原數量", "單價", "原金額", 
+                "變更數量", "單價", "變更金額", 
+                "增減數量", "單價", "增減金額"
+                ]);
+
+                const merges = []; 
+
+                outputData.forEach((item) => {
+                const currentRowIdx = wsData.length; 
+
+                if (item.isHeader) {
+                    const row = ["", item.title, "", "", "", "", "", "", "", "", "", ""];
+                    wsData.push(row);
+                    merges.push({ s: { r: currentRowIdx, c: 1 }, e: { r: currentRowIdx, c: 5 } });
+                } else {
+                    const r = item.excelRow;
+                    const cellOriginalAmount = { t: 'n', f: `D${r}*E${r}` }; 
+                    const cellNewAmount = { t: 'n', f: `G${r}*H${r}` };
+                    const cellDiffAmount = { t: 'n', f: `J${r}*K${r}` };
+
+                    let cellOriginalPrice = { t: 'n', v: item.originalPrice };
+                    let cellNewPrice = { t: 'n', v: item.newPrice };
+                    let cellDiffPrice = { t: 'n', f: `H${r}` };
+                    
+                    let cellDiffQty = { t: 'n', v: item.diffQty };
+
+                    if (item.isTotalRow) {
+                        const cellTotalOriginal = { t: 'n', f: item.formulaOriginalTotal };
+                        const cellTotalNew = { t: 'n', f: item.formulaNewTotal };
+                        const cellTotalDiff = { t: 'n', f: item.formulaDiffTotal };
+                        
+                        const row = [
+                            { t: 's', v: '' }, { t: 's', v: '總計' }, { t: 's', v: '' },
+                            { t: 's', v: '' }, { t: 's', v: '' }, cellTotalOriginal,
+                            { t: 's', v: '' }, { t: 's', v: '' }, cellTotalNew,
+                            { t: 's', v: '' }, { t: 's', v: '' }, cellTotalDiff
+                        ];
+                        wsData.push(row);
+                        return;
+                    }
+
+                    if (item.isSummaryItem) {
+                        if (item.formulaOriginalPrice) {
+                            cellOriginalPrice = { t: 'n', f: item.formulaOriginalPrice };
+                            cellNewPrice = { t: 'n', f: item.formulaNewPrice };
+                        }
+                        cellDiffAmount.f = `I${r}-F${r}`;
+                        cellDiffQty = { t: 's', v: '' };
+                        cellDiffPrice = { t: 's', v: '' };
+                    } else if (item.isRatioItem && item.formulaNewPrice) {
+                        cellOriginalPrice = { t: 'n', f: '=' + item.formulaOriginalPrice };
+                        cellNewPrice = { t: 'n', f: '=' + item.formulaNewPrice };
+                        cellDiffAmount.f = `I${r}-F${r}`;
+                        cellDiffPrice.f = `H${r}-E${r}`;
+                    } else if (!item.isLeaf && item.formulaPrice) {
+                        cellOriginalPrice = { t: 'n', f: item.formulaPrice };
+                        cellNewPrice = { t: 'n', f: item.formulaPrice.replace(/F/g, 'I') };
+                        cellDiffAmount.f = item.formulaPrice.replace(/F/g, 'L');
+                    }
+
+                    // 統一邏輯：增減數量 = 變更後 - 原契約
+                    if (!item.isSummaryItem && !item.isRatioItem && !item.isTotalRow && item.isLeaf) {
+                        // 增減數量 (J欄) = G欄 (變更後) - D欄 (原契約)
+                        // 注意：我們將數值轉為公式，以確保在Excel修改數量時連動
+                        cellDiffQty = { t: 'n', f: `G${r}-D${r}` };
+                    }
+
+                    const row = [
+                        { t: 's', v: item.code },
+                        { t: 's', v: item.name },
+                        { t: 's', v: item.unit },
+                        { t: 'n', v: item.originalQty },
+                        cellOriginalPrice,
+                        cellOriginalAmount,
+                        { t: 'n', v: item.newQty },
+                        cellNewPrice,
+                        cellNewAmount,
+                        cellDiffQty,
+                        cellDiffPrice,
+                        cellDiffAmount
+                    ];
+                    wsData.push(row);
+                }
+                });
+
+                const ws = window.XLSX.utils.aoa_to_sheet([]);
+                window.XLSX.utils.sheet_add_aoa(ws, wsData, { origin: "A1" });
+                ws['!merges'] = merges;
+                ws['!cols'] = [{ wch: 15 }, { wch: 40 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+                window.XLSX.utils.book_append_sheet(wb, ws, "變更明細表");
+                window.XLSX.writeFile(wb, `變更明細_${fileName || 'export.xlsx'}`);
+            };
+
+            const reset = () => {
+                setStep(1); setInputData([]); setOutputData([]);
+                setFileName('');
+                if(fileInputRef.current) fileInputRef.current.value = '';
+            };
+
+            const buttonStyle = {
+                padding: '8px 16px',
+                fontSize: '14px',
+                backgroundColor: 'transparent',
+                border: '1px solid #007bff',
+                color: '#007bff',
+                cursor: 'pointer',
+                borderRadius: '4px',
+                marginRight: '10px'
+            };
+
+            const primaryButtonStyle = {
+                ...buttonStyle,
+                backgroundColor: '#007bff',
+                color: 'white',
+                fontWeight: 'bold'
+            };
+
+            const getRowClass = (item) => {
+                if (item.isHeader) {
+                    switch(item.category) {
+                        case 'NO_CHANGE': return '#DDEBF7';
+                        case 'ADD': return '#E2EFDA';
+                        case 'DEDUCT': return '#FCE4D6';
+                        case 'NEW_ITEM': return '#E7E6E6';
+                        case 'SUMMARY': return '#FFF2CC';
+                        default: return '#eee';
+                    }
+                }
+                if (item.isTotalRow) return '#D9D9D9';
+                if (item.isSummaryItem) return '#fcf8e3';
+                if (item.isRatioItem) return '#fff5e6';
+                if (!item.isLeaf) return '#f9f9f9';
+                return 'white';
+            };
+
+            return (
+                <div style={{ fontFamily: 'sans-serif', padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
+                <h1>工程預算變更工具 (v2.0)</h1>
+                <hr style={{ marginBottom: '20px' }} />
+                
+                <div style={{ marginBottom: '20px' }}>
+                    <strong>步驟：</strong> 
+                    {step === 1 ? '1. 上傳檔案' : step === 2 ? '2. 輸入變更資訊' : '3. 預覽並下載(由於開發者功力不足，實際數字與預覽數字可能會有些許落差，確認格式正確後，下載Excel檔案中才是正確的計算金額'}
+                    {statusMsg && <span style={{ marginLeft: '20px', color: '#007bff' }}>{statusMsg}</span>}
+                </div>
+
+                {step === 1 && (
+                    <div style={{ border: '1px solid #ccc', padding: '30px', textAlign: 'center', borderRadius: '8px' }}>
+                    <p style={{ fontSize: '1.2em', marginBottom: '20px' }}>請上傳原契約預算 Excel 檔案 (.xlsx, .xls, .csv)</p>
+                    <input 
+                        type="file" 
+                        accept=".xlsx,.xls,.csv" 
+                        onChange={handleFileUpload} 
+                        ref={fileInputRef} 
+                        disabled={!libLoaded} 
+                        style={{ marginBottom: '20px' }}
+                    />
+                    <div style={{ marginTop: '20px', borderTop: '1px dashed #ccc', paddingTop: '20px' }}>
+                        <p>還沒有格式？先下載範本：</p>
+                        
+                        <button onClick={downloadTemplate} disabled={!libLoaded} style={buttonStyle}>
+                        下載空白預算書範本
+                        </button>
+                    </div>
+                    <div style={{ marginTop: '40px', textAlign: 'left', backgroundColor: '#f9f9f9', padding: '20px', borderRadius: '8px' }}>
+                        <strong>使用說明：</strong>
+                        <ul style={{ lineHeight: '1.6' }}>
+                            <li>1.請先下載空白預算書，將原契約工項及新增工項資料依範本欄位填入。</li>
+                            <li>2.<strong>變更後數量</strong>欄請填入變更後數量</li>
+                            <li>3.<strong>新增工項</strong>請在原契約數量填入0或留空，僅在變更後數量填入新增工項數量</li>
+                            <li>4.<strong>需按比例調整之工項</strong>（如不可量化、承商利稅等），請在<strong>按比例</strong>欄輸入V，或在預覽時勾選，系統會自動依包工費比例計算。</li>
+                            <li>本工具將自動把預算項目分為：<strong>無變更、追加、追減、新增工項</strong>四大類。</li>                
+                            <li>系統會自動生成 Excel 公式，下載後修改子項數量或單價，金額皆會連動更新。</li>
+                            <li>僅用於發包工程費變更計算，02~0A可能會出錯，請謹慎使用。</li>
+                        </ul>
+                    </div>
+                    </div>
+                )}
+
+                {step === 2 && (
+                    <div>
+                    <div style={{ marginBottom: '15px' }}>
+                        <button onClick={reset} style={buttonStyle}>取消重來</button>
+                        <button onClick={generateOutput} style={primaryButtonStyle}>開始轉換</button>
+                    </div>
+                    <table border="1" cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '14px' }}>
+                        <thead style={{ backgroundColor: '#eee' }}>
+                        <tr>
+                            <th style={{ textAlign: 'left' }}>工程項目</th>
+                            <th style={{ textAlign: 'left' }}>項目名稱</th>
+                            <th style={{ textAlign: 'center' }}>單位</th>
+                            <th style={{ textAlign: 'right' }}>原數量</th>
+                            <th style={{ textAlign: 'left', backgroundColor: '#e6f7ff', borderBottom: '2px solid #007bff' }}>變更後數量 (請輸入)</th>
+                            <th style={{ textAlign: 'center', backgroundColor: '#fff7e6', borderBottom: '2px solid orange' }}>按比例</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        {inputData.map((row, idx) => (
+                            <tr key={idx}>
+                            <td>{row['工程項目']}</td>
+                            <td>{row['項目名稱']}</td>
+                            <td style={{ textAlign: 'center' }}>{row['單位']}</td>
+                            <td style={{ textAlign: 'right' }}>{row['數量']}</td>
+                            <td style={{ backgroundColor: '#e6f7ff' }}>
+                                <input 
+                                type="text" 
+                                style={{ width: '95%', padding: '4px', border: '1px solid #ccc' }}
+                                value={row[changeQtyKey] !== undefined ? row[changeQtyKey] : ''} 
+                                onChange={(e) => handleInputChange(idx, changeQtyKey, e.target.value)} 
+                                />
+                            </td>
+                            <td style={{ textAlign: 'center', backgroundColor: '#fff7e6' }}>
+                                <input 
+                                    type="checkbox" 
+                                    checked={!!row[ratioKey]} 
+                                    onChange={(e) => handleInputChange(idx, ratioKey, e.target.checked ? 'V' : '')} 
+                                    style={{ transform: 'scale(1.2)' }}
+                                />
+                            </td>
+                            </tr>
+                        ))}
+                        </tbody>
+                    </table>
+                    </div>
+                )}
+
+                {step === 3 && (
+                    <div>
+                    <div style={{ marginBottom: '15px' }}>
+                        <button onClick={() => setStep(2)} style={buttonStyle}>返回修改</button>
+                        <button onClick={exportToExcel} style={primaryButtonStyle}>下載 Excel 報表</button>
+                    </div>
+                    <div style={{ overflowX: 'auto', border: '1px solid #ddd' }}>
+                        <table border="1" cellPadding="4" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', whiteSpace: 'nowrap' }}>
+                        <thead>
+                            <tr style={{ backgroundColor: '#f0f0f0' }}>
+                            <th rowSpan="2" style={{ padding: '8px' }}>項目</th>
+                            <th rowSpan="2" style={{ padding: '8px' }}>名稱</th>
+                            <th colSpan="3" style={{ backgroundColor: '#d9edf7', textAlign: 'center' }}>原契約</th>
+                            <th colSpan="3" style={{ backgroundColor: '#dff0d8', textAlign: 'center' }}>變更後</th>
+                            <th colSpan="3" style={{ backgroundColor: '#fcf8e3', textAlign: 'center' }}>增減</th>
+                            </tr>
+                            <tr style={{ backgroundColor: '#f9f9f9' }}>
+                            <th style={{ textAlign: 'right' }}>數量</th><th style={{ textAlign: 'right' }}>單價</th><th style={{ textAlign: 'right' }}>金額</th>
+                            <th style={{ textAlign: 'right' }}>數量</th><th style={{ textAlign: 'right' }}>單價</th><th style={{ textAlign: 'right' }}>金額</th>
+                            <th style={{ textAlign: 'right' }}>數量</th><th style={{ textAlign: 'right' }}>單價</th><th style={{ textAlign: 'right' }}>金額</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {outputData.map((row, idx) => {
+                                if (row.isHeader) {
+                                return (
+                                    <tr key={idx} style={{ backgroundColor: row.bgColor }}>
+                                        <td></td>
+                                        <td colSpan="11" style={{ fontWeight: 'bold', padding: '10px' }}>{row.title}</td>
+                                    </tr>
+                                );
+                            }
+                            if (row.isTotalRow) {
+                                return (
+                                    <tr key={idx} style={{ backgroundColor: row.bgColor, fontWeight: 'bold', borderTop: '2px solid #666' }}>
+                                        <td colSpan="5" style={{ textAlign: 'right', padding: '8px' }}>總計</td>
+                                        <td style={{ textAlign: 'right' }}>{Math.round(row.originalTotal).toLocaleString()}</td>
+                                        <td colSpan="2"></td>
+                                        <td style={{ textAlign: 'right' }}>{Math.round(row.newTotal).toLocaleString()}</td>
+                                        <td colSpan="2"></td>
+                                        <td style={{ textAlign: 'right', color: row.diffTotal < 0 ? 'red' : 'black' }}>{Math.round(row.diffTotal).toLocaleString()}</td>
+                                    </tr>
+                                );
+                            }
+                            return (
+                                <tr key={idx} style={{ backgroundColor: row.isRatioItem ? '#fff5e6' : (row.isSummaryItem ? '#fcf8e3' : '#fff') }}>
+                                <td style={{ fontFamily: 'monospace', padding: '4px' }}>{row.code}</td>
+                                <td style={{ padding: '4px' }}>{row.name} {row.isRatioItem && <span style={{ color: 'orange', fontSize: '0.8em' }}>(按比例)</span>}</td>
+                                
+                                <td style={{ textAlign: 'right', padding: '4px' }}>{row.isSummaryItem ? '' : row.originalQty}</td>
+                                <td style={{ textAlign: 'right', padding: '4px' }}>{row.isSummaryItem ? '' : row.originalPrice?.toLocaleString()}</td>
+                                <td style={{ textAlign: 'right', color: '#337ab7', padding: '4px' }}>{Math.round(row.originalTotal)?.toLocaleString()}</td>
+                                
+                                <td style={{ textAlign: 'right', padding: '4px' }}>{row.isSummaryItem ? '' : row.newQty}</td>
+                                <td style={{ textAlign: 'right', padding: '4px' }}>{row.isSummaryItem ? '' : row.newPrice?.toLocaleString()}</td>
+                                <td style={{ textAlign: 'right', color: '#3c763d', padding: '4px' }}>{Math.round(row.newTotal)?.toLocaleString()}</td>
+                                
+                                <td style={{ textAlign: 'right', padding: '4px' }}>{row.isSummaryItem ? '' : row.diffQty}</td>
+                                <td style={{ textAlign: 'right', color: '#8a6d3b', padding: '4px' }}>{row.isSummaryItem ? '' : row.diffPrice?.toLocaleString()}</td>
+                                <td style={{ textAlign: 'right', fontWeight: 'bold', color: row.diffTotal < 0 ? 'red' : 'black', padding: '4px' }}>{Math.round(row.diffTotal)?.toLocaleString()}</td>
+                                </tr>
+                            );
+                            })}
+                        </tbody>
+                        </table>
+                    </div>
+                    </div>
+                )}
+                </div>
+            );
+        };
+
+        // 渲染 React 應用
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ExcelProcessor />);
+    </script>
+</body>
+</html>
+[cite_start]``` [cite: 1-165]
