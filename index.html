@@ -7,7 +7,8 @@
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <!-- 替換為支援樣式的 xlsx-js-style -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
     <style>
         body { font-family: sans-serif; padding: 20px; }
         table { border-collapse: collapse; width: 100%; margin-top: 10px; }
@@ -319,7 +320,7 @@
                 };
                 recalculateCategoryParents(rawCat1); recalculateCategoryParents(rawCat2); recalculateCategoryParents(rawCat3); recalculateCategoryParents(rawCat4);
 
-                let rowCursor = 2; 
+                let rowCursor = 3; // Start from row 3 because header takes 2 rows now
                 let finalOutput = [];
 
                 const processBlock = (title, items, categoryKey, bgColor) => {
@@ -433,111 +434,193 @@
                 const wb = window.XLSX.utils.book_new();
                 const wsData = [];
                 
-                // Header Row with M column "變更簽文字"
-                wsData.push([
-                    "工程項目", "項目名稱", "單位", 
-                    "原數量", "單價", "原金額", 
-                    "變更數量", "單價", "變更金額", 
-                    "增減數量", "單價", "增減金額",
-                    "變更簽文字"
-                ]);
+                // --- 樣式設定輔助函式 ---
+                const thinBorder = {
+                    top: { style: "thin", color: { auto: 1 } },
+                    bottom: { style: "thin", color: { auto: 1 } },
+                    left: { style: "thin", color: { auto: 1 } },
+                    right: { style: "thin", color: { auto: 1 } }
+                };
 
-                const merges = []; 
+                const numFmt = "#,##0.00"; // 千分位，兩位小數
+
+                const createCell = (value, type, bgColor = null, bold = false, align = null) => {
+                    const cell = { v: value, t: type };
+                    if (type === 'n') cell.z = numFmt; // 自動套用數字格式
+                    cell.s = {
+                        font: { name: "Arial", sz: 10, bold: bold },
+                        alignment: { wrapText: true, vertical: "center" },
+                        border: thinBorder
+                    };
+                    if (bgColor) {
+                        const hex = bgColor.replace('#', '');
+                        cell.s.fill = { fgColor: { rgb: hex } };
+                    }
+                    if (align) {
+                        cell.s.alignment.horizontal = align;
+                    }
+                    return cell;
+                };
+
+                // Header Row 1
+                const headers1 = [
+                    "工程項目", "項目名稱", "單位", 
+                    "原契約", "", "", 
+                    "變更後", "", "", 
+                    "變更增減", "", "",
+                    "變更簽文字"
+                ];
+                
+                // Header Row 2
+                const headers2 = [
+                    "", "", "", 
+                    "數量", "單價", "金額", 
+                    "數量", "單價", "金額", 
+                    "數量", "單價", "金額",
+                    ""
+                ];
+
+                wsData.push(headers1.map(h => createCell(h, 's', '#EFEFEF', true, 'center')));
+                wsData.push(headers2.map(h => createCell(h, 's', '#EFEFEF', true, 'center')));
+
+                const merges = [
+                    { s: { r: 0, c: 0 }, e: { r: 1, c: 0 } }, // 工程項目
+                    { s: { r: 0, c: 1 }, e: { r: 1, c: 1 } }, // 項目名稱
+                    { s: { r: 0, c: 2 }, e: { r: 1, c: 2 } }, // 單位
+                    { s: { r: 0, c: 3 }, e: { r: 0, c: 5 } }, // 原契約合併
+                    { s: { r: 0, c: 6 }, e: { r: 0, c: 8 } }, // 變更後合併
+                    { s: { r: 0, c: 9 }, e: { r: 0, c: 11 } }, // 變更增減合併
+                    { s: { r: 0, c: 12 }, e: { r: 1, c: 12 } } // 變更簽文字
+                ]; 
 
                 outputData.forEach((item) => {
                     const currentRowIdx = wsData.length; 
 
                     if (item.isHeader) {
-                        const row = ["", item.title, "", "", "", "", "", "", "", "", "", "", ""];
+                        // 標題列 (例如：一、原項目無追加減)
+                        // A欄 (Index 0) 放標題
+                        const cellTitle = createCell(item.title, 's', item.bgColor, true, 'left');
+                        
+                        const row = [cellTitle];
+                        
+                        // B~L欄 (Index 1~11) 填空並上色，保持格線
+                        for(let i=1; i<=11; i++) {
+                            row.push(createCell("", 's', item.bgColor));
+                        }
+
+                        // M欄 (Index 12) 無色無格線
+                        const cellM = createCell("", 's');
+                        cellM.s.border = {}; // Remove border for M
+                        row.push(cellM);
+
                         wsData.push(row);
-                        merges.push({ s: { r: currentRowIdx, c: 1 }, e: { r: currentRowIdx, c: 5 } });
+                        
+                        // 合併 A(0) 到 L(11)
+                        merges.push({ s: { r: currentRowIdx, c: 0 }, e: { r: currentRowIdx, c: 11 } });
+
                     } else {
                         const r = item.excelRow;
-                        const cellOriginalAmount = { t: 'n', f: `ROUND(D${r}*E${r}, 2)` }; 
-                        const cellNewAmount = { t: 'n', f: `ROUND(G${r}*H${r}, 2)` };
-                        const cellDiffAmount = { t: 'n', f: `ROUND(J${r}*K${r}, 2)` };
+                        const bgColor = item.isTotalRow ? '#D9D9D9' : 
+                                      item.isRatioItem ? '#FFF5E6' : 
+                                      item.isSummaryItem ? '#FCF8E3' : null;
+                        const isBold = item.isTotalRow;
 
-                        let cellOriginalPrice = { t: 'n', v: item.originalPrice };
-                        let cellNewPrice = { t: 'n', v: item.newPrice };
-                        let cellDiffPrice = { t: 'n', f: `H${r}` };
+                        // 公式與數值處理
+                        const cellOriginalAmount = { f: `ROUND(D${r}*E${r}, 2)`, t: 'n', z: numFmt }; 
+                        const cellNewAmount = { f: `ROUND(G${r}*H${r}, 2)`, t: 'n', z: numFmt };
+                        const cellDiffAmount = { f: `ROUND(J${r}*K${r}, 2)`, t: 'n', z: numFmt };
+
+                        let cellOriginalPrice = { v: item.originalPrice, t: 'n', z: numFmt };
+                        let cellNewPrice = { v: item.newPrice, t: 'n', z: numFmt };
                         
-                        let cellDiffQty = { t: 'n', v: item.diffQty };
-                        let cellMemo = { t: 's', v: '' }; // Column M content
+                        // J, K, L Unified Formulas
+                        // J: G-D (Diff Qty)
+                        let cellDiffQty = { t: 'n', z: numFmt, f: `G${r}-D${r}` };
+                        // K: IF(H=E, E, H-E) (Diff Price)
+                        let cellDiffPrice = { t: 'n', z: numFmt, f: `IF(H${r}=E${r},E${r},H${r}-E${r})` };
+                        // L: I-F (Diff Amount)
+                        let cellDiffAmountUnified = { t: 'n', z: numFmt, f: `I${r}-F${r}` };
 
+                        let cellMemo = { v: '', t: 's' };
+
+                        // 套用樣式到這些特殊 Cell
+                        [cellOriginalAmount, cellNewAmount, cellDiffAmountUnified, cellOriginalPrice, cellNewPrice, cellDiffPrice, cellDiffQty, cellMemo].forEach(c => {
+                            c.s = { font: { name: "Arial", sz: 10, bold: isBold }, border: thinBorder, alignment: { vertical: "center" } };
+                            if (bgColor) c.s.fill = { fgColor: { rgb: bgColor.replace('#', '') } };
+                        });
+
+                        // 總計列處理
                         if (item.isTotalRow) {
-                            const cellTotalOriginal = { t: 'n', f: item.formulaOriginalTotal };
-                            const cellTotalNew = { t: 'n', f: item.formulaNewTotal };
-                            const cellTotalDiff = { t: 'n', f: item.formulaDiffTotal };
+                            const cellTotalOriginal = { f: item.formulaOriginalTotal, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
+                            const cellTotalNew = { f: item.formulaNewTotal, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
                             
+                            // 總計列的 L 也改為 I-F (雖然原先是 Sum(L)，但 I-F 是數學等價且符合使用者 "統一所有" 的需求)
+                            const cellTotalDiff = { f: `I${r}-F${r}`, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
+                            
+                            const emptyStyled = (bg) => createCell("", 's', bg, true);
+
                             const row = [
-                                { t: 's', v: '' }, { t: 's', v: '總計' }, { t: 's', v: '' },
-                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalOriginal,
-                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalNew,
-                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalDiff,
-                                { t: 's', v: '' }
+                                emptyStyled('#D9D9D9'), 
+                                createCell('總計', 's', '#D9D9D9', true, 'right'), 
+                                emptyStyled('#D9D9D9'),
+                                emptyStyled('#D9D9D9'), 
+                                emptyStyled('#D9D9D9'), 
+                                cellTotalOriginal,
+                                emptyStyled('#D9D9D9'), 
+                                emptyStyled('#D9D9D9'), 
+                                cellTotalNew,
+                                emptyStyled('#D9D9D9'), 
+                                emptyStyled('#D9D9D9'), 
+                                cellTotalDiff,
+                                emptyStyled('#D9D9D9')
                             ];
                             wsData.push(row);
                             return;
                         }
 
+                        // 公式邏輯處理
                         if (item.isSummaryItem) {
                             if (item.formulaOriginalPrice) {
-                                cellOriginalPrice = { t: 'n', f: item.formulaOriginalPrice };
-                                cellNewPrice = { t: 'n', f: item.formulaNewPrice };
+                                cellOriginalPrice.f = item.formulaOriginalPrice; delete cellOriginalPrice.v;
+                                cellNewPrice.f = item.formulaNewPrice; delete cellNewPrice.v;
                             }
-                            cellDiffAmount.f = `I${r}-F${r}`;
-                            cellDiffQty = { t: 's', v: '' };
-                            cellDiffPrice = { t: 's', v: '' };
-
                         } else if (item.isRatioItem && item.formulaNewPrice) {
-                            cellOriginalPrice = { t: 'n', f: `=ROUND(${item.formulaOriginalPrice}, 2)` };
-                            cellNewPrice = { t: 'n', f: `=ROUND(${item.formulaNewPrice}, 2)` };
-                            cellDiffAmount.f = `ROUND(I${r}-F${r}, 2)`;
-                            cellDiffPrice.f = `H${r}-E${r}`;
+                            cellOriginalPrice.f = `=ROUND(${item.formulaOriginalPrice}, 2)`; delete cellOriginalPrice.v;
+                            cellNewPrice.f = `=ROUND(${item.formulaNewPrice}, 2)`; delete cellNewPrice.v;
                         } else if (!item.isLeaf && item.formulaPrice) {
-                            cellOriginalPrice = { t: 'n', f: item.formulaPrice };
-                            cellNewPrice = { t: 'n', f: item.formulaPrice.replace(/F/g, 'I') };
-                            cellDiffAmount.f = item.formulaPrice.replace(/F/g, 'L');
+                            cellOriginalPrice.f = item.formulaPrice; delete cellOriginalPrice.v;
+                            cellNewPrice.f = item.formulaPrice.replace(/F/g, 'I'); delete cellNewPrice.v;
                         }
 
-                        // 增減數量公式: G - D
                         if (!item.isSummaryItem && !item.isRatioItem && !item.isTotalRow && item.isLeaf) {
-                            cellDiffQty = { t: 'n', f: `G${r}-D${r}` };
-                            
-                            // M欄公式邏輯: 只在二、三、四類別的純子項生成
                             if (['ADD', 'DEDUCT', 'NEW_ITEM'].includes(item.category)) {
-                                let formulaStr = "";
-                                
-                                // Helper function to format cell reference
                                 const fmt = (ref) => `IF(MOD(${ref},1)=0,TEXT(${ref},"#,###"),TEXT(${ref},"#,###.##"))`;
-
+                                let formulaStr = "";
                                 if (item.category === 'DEDUCT') {
-                                    // 追減格式
                                     formulaStr = `"「"&A${r}&" "&B${r}&"」：原契約數量"&${fmt(`D${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，追減數量"&${fmt(`ABS(J${r})`)}&C${r}&"，追減金額"&${fmt(`ABS(L${r})`)}&"元。"`;
                                 } else if (item.originalQty === 0) {
-                                     // 新增工項格式 (原契約數量為0)
                                      formulaStr = `"「"&A${r}&" "&B${r}&"」：新增數量"&${fmt(`J${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，新增追加金額"&${fmt(`L${r}`)}&"元。"`;
                                 } else {
-                                    // 追加格式
                                     formulaStr = `"「"&A${r}&" "&B${r}&"」：原契約數量"&${fmt(`D${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，追加數量"&${fmt(`J${r}`)}&C${r}&"，追加金額"&${fmt(`L${r}`)}&"元。"`;
                                 }
-                                cellMemo = { t: 's', f: formulaStr };
+                                cellMemo.f = formulaStr; delete cellMemo.v;
                             }
                         }
 
+                        // 建立完整 Row
                         const row = [
-                            { t: 's', v: item.code },
-                            { t: 's', v: item.name },
-                            { t: 's', v: item.unit },
-                            { t: 'n', v: item.originalQty },
+                            createCell(item.code, 's', bgColor),
+                            createCell(item.name, 's', bgColor),
+                            createCell(item.unit, 's', bgColor, false, 'center'),
+                            createCell(item.originalQty, 'n', bgColor, false, 'right'),
                             cellOriginalPrice,
                             cellOriginalAmount,
-                            { t: 'n', v: item.newQty },
+                            createCell(item.newQty, 'n', bgColor, false, 'right'),
                             cellNewPrice,
                             cellNewAmount,
                             cellDiffQty,
                             cellDiffPrice,
-                            cellDiffAmount,
+                            cellDiffAmountUnified,
                             cellMemo
                         ];
                         wsData.push(row);
@@ -552,7 +635,7 @@
                     { wch: 10 }, { wch: 12 }, { wch: 15 }, 
                     { wch: 10 }, { wch: 12 }, { wch: 15 }, 
                     { wch: 10 }, { wch: 10 }, { wch: 10 },
-                    { wch: 60 } // M column width
+                    { wch: 60 }
                 ];
                 window.XLSX.utils.book_append_sheet(wb, ws, "變更明細表");
                 window.XLSX.writeFile(wb, `變更明細_${fileName || 'export.xlsx'}`);
