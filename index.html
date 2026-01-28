@@ -4,13 +4,23 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>工程預算變更工具</title>
-    <!-- 載入 React 核心 -->
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <!-- 載入 Babel 用於解析 JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <!-- 載入 SheetJS 用於處理 Excel -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 20px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 10px; }
+        th, td { border: 1px solid #999; padding: 4px; font-size: 13px; }
+        th { background: #eee; }
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .step-active { font-weight: bold; color: blue; }
+        .step-inactive { color: gray; }
+        input[type="text"] { width: 90%; }
+        button { cursor: pointer; padding: 5px 10px; margin-right: 5px; }
+        .nowrap { white-space: nowrap; }
+    </style>
 </head>
 <body>
     <div id="root"></div>
@@ -172,13 +182,17 @@
                     });
                 }
 
+                // 修正：目標項目包含 一般純子項 與 按比例項目
                 let combinedTargets = [...targetLeaves, ...ratioItems];
                 if (combinedTargets.length === 0) return [];
 
                 const relevantCodes = new Set(combinedTargets.map(i => i.code));
+                
+                // 修正邏輯：只要是 combinedTargets 中任何一個項目的父項，都要被選出來
                 const resultItems = processedAllItems.filter(item => {
                     if (relevantCodes.has(item.code)) return true;
-                    return targetLeaves.some(leaf => leaf.code.startsWith(item.code));
+                    // 修正處：原本只檢查 targetLeaves，現在改檢查 combinedTargets (包含按比例項目)
+                    return combinedTargets.some(leaf => leaf.code.startsWith(item.code));
                 });
 
                 resultItems.sort((a, b) => a.code.localeCompare(b.code));
@@ -212,6 +226,7 @@
                             rowData.diffTotal = rowData.diffQty * rowData.diffPrice;
                         }
                     } else {
+                        // 這裡的初始計算只包含 targetLeaves (一般子項)，按比例的金額稍後會透過 recalculateCategoryParents 補上
                         const myLeaves = targetLeaves.filter(leaf => leaf.code.startsWith(item.code));
                         let sumOriginal = 0, sumNew = 0, sumDiff = 0;
                         myLeaves.forEach(leaf => {
@@ -603,6 +618,3 @@
     </script>
 </body>
 </html>
-
-
-
