@@ -182,16 +182,13 @@
                     });
                 }
 
-                // 修正：目標項目包含 一般純子項 與 按比例項目
                 let combinedTargets = [...targetLeaves, ...ratioItems];
                 if (combinedTargets.length === 0) return [];
 
                 const relevantCodes = new Set(combinedTargets.map(i => i.code));
                 
-                // 修正邏輯：只要是 combinedTargets 中任何一個項目的父項，都要被選出來
                 const resultItems = processedAllItems.filter(item => {
                     if (relevantCodes.has(item.code)) return true;
-                    // 修正處：原本只檢查 targetLeaves，現在改檢查 combinedTargets (包含按比例項目)
                     return combinedTargets.some(leaf => leaf.code.startsWith(item.code));
                 });
 
@@ -226,7 +223,6 @@
                             rowData.diffTotal = rowData.diffQty * rowData.diffPrice;
                         }
                     } else {
-                        // 這裡的初始計算只包含 targetLeaves (一般子項)，按比例的金額稍後會透過 recalculateCategoryParents 補上
                         const myLeaves = targetLeaves.filter(leaf => leaf.code.startsWith(item.code));
                         let sumOriginal = 0, sumNew = 0, sumDiff = 0;
                         myLeaves.forEach(leaf => {
@@ -436,64 +432,114 @@
                 if (!window.XLSX) return;
                 const wb = window.XLSX.utils.book_new();
                 const wsData = [];
+                
+                // Header Row with M column "變更簽文字"
                 wsData.push([
-                    "工程項目", "項目名稱", "單位", "原數量", "單價", "原金額", "變更數量", "單價", "變更金額", "增減數量", "單價", "增減金額", "變更簽文字"
+                    "工程項目", "項目名稱", "單位", 
+                    "原數量", "單價", "原金額", 
+                    "變更數量", "單價", "變更金額", 
+                    "增減數量", "單價", "增減金額",
+                    "變更簽文字"
                 ]);
+
                 const merges = []; 
 
                 outputData.forEach((item) => {
                     const currentRowIdx = wsData.length; 
+
                     if (item.isHeader) {
                         const row = ["", item.title, "", "", "", "", "", "", "", "", "", "", ""];
                         wsData.push(row);
                         merges.push({ s: { r: currentRowIdx, c: 1 }, e: { r: currentRowIdx, c: 5 } });
                     } else {
                         const r = item.excelRow;
-                        const cellOriginalAmount = { t: 'n', f: `D${r}*E${r}` }; 
-                        const cellNewAmount = { t: 'n', f: `G${r}*H${r}` };
-                        const cellDiffAmount = { t: 'n', f: `J${r}*K${r}` };
+                        const cellOriginalAmount = { t: 'n', f: `ROUND(D${r}*E${r}, 2)` }; 
+                        const cellNewAmount = { t: 'n', f: `ROUND(G${r}*H${r}, 2)` };
+                        const cellDiffAmount = { t: 'n', f: `ROUND(J${r}*K${r}, 2)` };
+
                         let cellOriginalPrice = { t: 'n', v: item.originalPrice };
                         let cellNewPrice = { t: 'n', v: item.newPrice };
                         let cellDiffPrice = { t: 'n', f: `H${r}` };
+                        
                         let cellDiffQty = { t: 'n', v: item.diffQty };
-                        let cellMemo = { t: 's', v: '' };
+                        let cellMemo = { t: 's', v: '' }; // Column M content
 
                         if (item.isTotalRow) {
                             const cellTotalOriginal = { t: 'n', f: item.formulaOriginalTotal };
                             const cellTotalNew = { t: 'n', f: item.formulaNewTotal };
                             const cellTotalDiff = { t: 'n', f: item.formulaDiffTotal };
-                            const row = [ { t: 's', v: '' }, { t: 's', v: '總計' }, { t: 's', v: '' }, { t: 's', v: '' }, { t: 's', v: '' }, cellTotalOriginal, { t: 's', v: '' }, { t: 's', v: '' }, cellTotalNew, { t: 's', v: '' }, { t: 's', v: '' }, cellTotalDiff, { t: 's', v: '' } ];
+                            
+                            const row = [
+                                { t: 's', v: '' }, { t: 's', v: '總計' }, { t: 's', v: '' },
+                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalOriginal,
+                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalNew,
+                                { t: 's', v: '' }, { t: 's', v: '' }, cellTotalDiff,
+                                { t: 's', v: '' }
+                            ];
                             wsData.push(row);
                             return;
                         }
 
                         if (item.isSummaryItem) {
-                            if (item.formulaOriginalPrice) { cellOriginalPrice = { t: 'n', f: item.formulaOriginalPrice }; cellNewPrice = { t: 'n', f: item.formulaNewPrice }; }
-                            cellDiffAmount.f = `I${r}-F${r}`; cellDiffQty = { t: 's', v: '' }; cellDiffPrice = { t: 's', v: '' };
+                            if (item.formulaOriginalPrice) {
+                                cellOriginalPrice = { t: 'n', f: item.formulaOriginalPrice };
+                                cellNewPrice = { t: 'n', f: item.formulaNewPrice };
+                            }
+                            cellDiffAmount.f = `I${r}-F${r}`;
+                            cellDiffQty = { t: 's', v: '' };
+                            cellDiffPrice = { t: 's', v: '' };
+
                         } else if (item.isRatioItem && item.formulaNewPrice) {
-                            cellOriginalPrice = { t: 'n', f: '=' + item.formulaOriginalPrice }; cellNewPrice = { t: 'n', f: '=' + item.formulaNewPrice };
-                            cellDiffAmount.f = `I${r}-F${r}`; cellDiffPrice.f = `H${r}-E${r}`;
+                            cellOriginalPrice = { t: 'n', f: `=ROUND(${item.formulaOriginalPrice}, 2)` };
+                            cellNewPrice = { t: 'n', f: `=ROUND(${item.formulaNewPrice}, 2)` };
+                            cellDiffAmount.f = `ROUND(I${r}-F${r}, 2)`;
+                            cellDiffPrice.f = `H${r}-E${r}`;
                         } else if (!item.isLeaf && item.formulaPrice) {
-                            cellOriginalPrice = { t: 'n', f: item.formulaPrice }; cellNewPrice = { t: 'n', f: item.formulaPrice.replace(/F/g, 'I') }; cellDiffAmount.f = item.formulaPrice.replace(/F/g, 'L');
+                            cellOriginalPrice = { t: 'n', f: item.formulaPrice };
+                            cellNewPrice = { t: 'n', f: item.formulaPrice.replace(/F/g, 'I') };
+                            cellDiffAmount.f = item.formulaPrice.replace(/F/g, 'L');
                         }
 
+                        // 增減數量公式: G - D
                         if (!item.isSummaryItem && !item.isRatioItem && !item.isTotalRow && item.isLeaf) {
                             cellDiffQty = { t: 'n', f: `G${r}-D${r}` };
+                            
+                            // M欄公式邏輯: 只在二、三、四類別的純子項生成
                             if (['ADD', 'DEDUCT', 'NEW_ITEM'].includes(item.category)) {
                                 let formulaStr = "";
+                                
+                                // Helper function to format cell reference
                                 const fmt = (ref) => `IF(MOD(${ref},1)=0,TEXT(${ref},"#,###"),TEXT(${ref},"#,###.##"))`;
+
                                 if (item.category === 'DEDUCT') {
+                                    // 追減格式
                                     formulaStr = `"「"&A${r}&" "&B${r}&"」：原契約數量"&${fmt(`D${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，追減數量"&${fmt(`ABS(J${r})`)}&C${r}&"，追減金額"&${fmt(`ABS(L${r})`)}&"元。"`;
                                 } else if (item.originalQty === 0) {
+                                     // 新增工項格式 (原契約數量為0)
                                      formulaStr = `"「"&A${r}&" "&B${r}&"」：新增數量"&${fmt(`J${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，新增追加金額"&${fmt(`L${r}`)}&"元。"`;
                                 } else {
+                                    // 追加格式
                                     formulaStr = `"「"&A${r}&" "&B${r}&"」：原契約數量"&${fmt(`D${r}`)}&C${r}&"，單價為"&${fmt(`H${r}`)}&"元，追加數量"&${fmt(`J${r}`)}&C${r}&"，追加金額"&${fmt(`L${r}`)}&"元。"`;
                                 }
                                 cellMemo = { t: 's', f: formulaStr };
                             }
                         }
 
-                        const row = [ { t: 's', v: item.code }, { t: 's', v: item.name }, { t: 's', v: item.unit }, { t: 'n', v: item.originalQty }, cellOriginalPrice, cellOriginalAmount, { t: 'n', v: item.newQty }, cellNewPrice, cellNewAmount, cellDiffQty, cellDiffPrice, cellDiffAmount, cellMemo ];
+                        const row = [
+                            { t: 's', v: item.code },
+                            { t: 's', v: item.name },
+                            { t: 's', v: item.unit },
+                            { t: 'n', v: item.originalQty },
+                            cellOriginalPrice,
+                            cellOriginalAmount,
+                            { t: 'n', v: item.newQty },
+                            cellNewPrice,
+                            cellNewAmount,
+                            cellDiffQty,
+                            cellDiffPrice,
+                            cellDiffAmount,
+                            cellMemo
+                        ];
                         wsData.push(row);
                     }
                 });
@@ -501,7 +547,13 @@
                 const ws = window.XLSX.utils.aoa_to_sheet([]);
                 window.XLSX.utils.sheet_add_aoa(ws, wsData, { origin: "A1" });
                 ws['!merges'] = merges;
-                ws['!cols'] = [{ wch: 15 }, { wch: 40 }, { wch: 8 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 12 }, { wch: 15 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 60 }];
+                ws['!cols'] = [
+                    { wch: 15 }, { wch: 40 }, { wch: 8 }, 
+                    { wch: 10 }, { wch: 12 }, { wch: 15 }, 
+                    { wch: 10 }, { wch: 12 }, { wch: 15 }, 
+                    { wch: 10 }, { wch: 10 }, { wch: 10 },
+                    { wch: 60 } // M column width
+                ];
                 window.XLSX.utils.book_append_sheet(wb, ws, "變更明細表");
                 window.XLSX.writeFile(wb, `變更明細_${fileName || 'export.xlsx'}`);
             };
@@ -531,10 +583,9 @@
                                 <strong>說明：</strong>
                                 <ul>
                                     <li>請先下載空白預算書，將原契約工項及新增工項資料依範本欄位填入。</li>
-                                    <li><strong>變更後數量</strong>欄請填入需變更工項的變更後數量，未變更的工項，此欄請留空白。</li>
-                                    <li><strong>新增工項</strong>請在原契約數量填入0或留空，僅在變更後數量填入新增工項數量。</li>
-                                    <li><strong>需按比例調整之工項</strong>（如不可量化、承商利稅等），請在<strong>按比例</strong>欄輸入V，或在預覽時勾選，系統會自動依包工費比例計算。</li>
-                                    <li>僅用於發包工程費數量變更用，02~0A或有單價變更者(如自辦工費或其他)可能會出錯，請謹慎使用。</li>
+                                    <li>變更後數量欄請填入需變更工項的變更後數量，未變更的工項，此留空白。</li>
+                                    <li>新增工項請在原契約數量填入0或留空，僅在變更後數量填入新增工項數量。</li>
+                                    <li>需按比例調整之工項（如不可量化、承商利稅等），請在按比例欄輸入V，或在預覽時勾選，系統會自動依包工費比例計算。</li>
                                 </ul>
                             </div>
                         </div>
