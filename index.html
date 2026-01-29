@@ -679,13 +679,12 @@
                                 <button onClick={reset} style={{ marginRight: '5px' }}>取消</button>
                                 <button onClick={generateOutput}>轉換</button>
                             </div>
-                            <table border="1" cellPadding="5" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                            <table border="1" cellPadding="5" style={{ width: '80%', borderCollapse: 'collapse' }} align="center">
                                 <thead style={{ background: '#eee' }}>
                                     <tr>
-                                        <th>項目</th><th>名稱</th><th>單位</th><th>原數量</th>
-                                        {/* 調整寬度為 100px */}
-                                        <th style={{ background: '#e6f7ff', width: '100px' }}>變更後數量</th>
-                                        <th style={{ background: '#fff7e6' }}>按比例</th>
+                                        <th style={{ width: '10%' }}>項目</th><th>名稱</th><th style={{ width: '5%' }}>單位</th><th style={{ width: '15%' }}>原數量</th>
+                                        <th style={{ background: '#e6f7ff', width: '15%' }}>變更後數量</th>
+                                        <th style={{ background: '#fff7e6', width: '15%'  }}>按比例</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -752,4 +751,5 @@
     </script>
 </body>
 </html>
+
 
