@@ -448,7 +448,6 @@
                     const cell = { v: value, t: type };
                     if (type === 'n') cell.z = numFmt; // 自動套用數字格式
                     cell.s = {
-                        font: { name: "Arial", sz: 10, bold: bold },
                         alignment: { wrapText: true, vertical: "center" },
                         border: thinBorder
                     };
@@ -534,8 +533,8 @@
                         let cellNewPrice = { v: item.newPrice, t: 'n', z: numFmt };
                         
                         // J, K, L Unified Formulas
-                        // J: G-D (Diff Qty)
-                        let cellDiffQty = { t: 'n', z: numFmt, f: `G${r}-D${r}` };
+                        // J: G-D (Diff Qty) with hiding if zero
+                        let cellDiffQty = { t: 'n', z: numFmt, f: `IF(G${r}-D${r}=0,"",G${r}-D${r})` };
                         // K: IF(H=E, E, H-E) (Diff Price)
                         let cellDiffPrice = { t: 'n', z: numFmt, f: `IF(H${r}=E${r},E${r},H${r}-E${r})` };
                         // L: I-F (Diff Amount)
@@ -545,7 +544,7 @@
 
                         // 套用樣式到這些特殊 Cell
                         [cellOriginalAmount, cellNewAmount, cellDiffAmountUnified, cellOriginalPrice, cellNewPrice, cellDiffPrice, cellDiffQty, cellMemo].forEach(c => {
-                            c.s = { font: { name: "Arial", sz: 10, bold: isBold }, border: thinBorder, alignment: { vertical: "center" } };
+                            c.s = { font: { name: "Microsoft JhengHei", sz: 14, bold: isBold }, border: thinBorder, alignment: { vertical: "center" } };
                             if (bgColor) c.s.fill = { fgColor: { rgb: bgColor.replace('#', '') } };
                         });
 
@@ -664,12 +663,12 @@
                             <button onClick={downloadTemplate} disabled={!libLoaded}>下載空白範本</button>
                             <div style={{ marginTop: '20px', textAlign: 'left', background: '#f0f0f0', padding: '10px' }}>
                                 <strong>說明：</strong>
-                                <ul>
-                                    <li>請先下載空白預算書，將原契約工項及新增工項資料依範本欄位填入。</li>
-                                    <li>變更後數量欄請填入需變更工項的變更後數量，未變更的工項，此留空白。</li>
-                                    <li>新增工項請在原契約數量填入0或留空，僅在變更後數量填入新增工項數量。</li>
-                                    <li>需按比例調整之工項（如不可量化、承商利稅等），請在按比例欄輸入V，或在預覽時勾選，系統會自動依包工費比例計算。</li>
-                                </ul>
+                                <ol>
+                                    <li>下載空白預算書，將原契約工項依範本欄位填入。</li>
+                                    <li>需變更之項目，填寫變更後數量，無需變更的項目留空。</li>
+                                    <li>新增工項，在原契約數量填入0，在變更後數量填入新增工項數量。</li>
+                                    <li>需按比例調整之工項（如不可量化、承商利稅等），在按比例欄輸入V，或在第二步勾選，系統會依包工費比例拆分。</li>
+                                </ol>
                             </div>
                         </div>
                     )}
@@ -684,7 +683,7 @@
                                 <thead style={{ background: '#eee' }}>
                                     <tr>
                                         <th>項目</th><th>名稱</th><th>單位</th><th>原數量</th>
-                                        <th style={{ background: '#e6f7ff' }}>變更後數量</th>
+                                        <th style={{ background: '#e6f7ff' }}, width: '150px' >變更後數量</th>
                                         <th style={{ background: '#fff7e6' }}>按比例</th>
                                     </tr>
                                 </thead>
