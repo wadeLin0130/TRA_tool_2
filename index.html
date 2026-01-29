@@ -847,7 +847,7 @@
                                                 
                                                 {newItems.length > 0 && (
                                                     <tr style={{ background: '#d9d9d9' }}>
-                                                        <td colSpan="6" align="center" style={{ fontWeight: 'bold', padding: '8px' }}>--- 新增工項 (原數量為 0) ---</td>
+                                                        <td colSpan="6" align="center" style={{ fontWeight: 'bold', padding: '8px' }}>新增工項</td>
                                                     </tr>
                                                 )}
 
@@ -893,7 +893,7 @@
                                     <tbody>
                                         {outputData.map((row, idx) => {
                                             if (row.isHeader) return <tr key={idx} style={{ background: row.bgColor }}><td></td><td colSpan="11"><b>{row.title}</b></td></tr>;
-                                            if (row.isTotalRow) return <tr key={idx} style={{ background: row.bgColor, fontWeight: 'bold' }}><td colSpan="5" align="right">總計</td><td align="right">{formatNum(row.originalTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.newTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.diffTotal)}</td></tr>;
+                                            if (row.isTotalRow) return <tr key={idx} style={{ background: row.bgColor, fontWeight: 'bold' }}><td colSpan="4" align="right">總計</td><td align="right">{formatNum(row.originalTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.newTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.diffTotal)}</td></tr>;
                                             return (
                                                 <tr key={idx} style={{ background: row.isRatioItem ? '#fff5e6' : (row.isSummaryItem ? '#fcf8e3' : '#fff') }}>
                                                     <td>{row.code}</td><td>{row.name}</td>
@@ -917,3 +917,4 @@
     </script>
 </body>
 </html>
+
