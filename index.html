@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>工程預算變更工具</title>
+    <title>工程預算變更工具 V1.1</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -544,7 +544,7 @@
 
                         // 套用樣式到這些特殊 Cell
                         [cellOriginalAmount, cellNewAmount, cellDiffAmountUnified, cellOriginalPrice, cellNewPrice, cellDiffPrice, cellDiffQty, cellMemo].forEach(c => {
-                            c.s = { font: { name: "Microsoft JhengHei", sz: 14, bold: isBold }, border: thinBorder, alignment: { vertical: "center" } };
+                            c.s = { font: { name: "Noto Sans CJK TC Regular", sz: 14}, border: thinBorder, alignment: { vertical: "center" } };
                             if (bgColor) c.s.fill = { fgColor: { rgb: bgColor.replace('#', '') } };
                         });
 
@@ -644,7 +644,7 @@
 
             return (
                 <div style={{ fontFamily: 'sans-serif', padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-                    <h1 style={{ color: 'black' }}>工程預算變更工具</h1>
+                    <h1 style={{ color: 'black' }}>工程預算變更工具 V1.1</h1>
                     <hr />
                     
                     <div style={{ marginBottom: '20px' }}>
@@ -683,7 +683,8 @@
                                 <thead style={{ background: '#eee' }}>
                                     <tr>
                                         <th>項目</th><th>名稱</th><th>單位</th><th>原數量</th>
-                                        <th style={{ background: '#e6f7ff' }}, width: '150px' >變更後數量</th>
+                                        {/* 調整寬度為 100px */}
+                                        <th style={{ background: '#e6f7ff', width: '100px' }}>變更後數量</th>
                                         <th style={{ background: '#fff7e6' }}>按比例</th>
                                     </tr>
                                 </thead>
