@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>工程預算變更工具 V1.4</title>
+    <title>工程預算變更工具</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -327,10 +327,11 @@
                                 rowData.newQty = parseNum(item.changeQtyVal);
                             }
                             rowData.newPrice = item.originalPrice;
-                            rowData.newTotal = rowData.newQty * rowData.newPrice;
-                            rowData.diffQty = rowData.newQty - rowData.originalQty;
+                            // 修正：金額與數量計算皆使用 round2 避免浮點數誤差
+                            rowData.newTotal = round2(rowData.newQty * rowData.newPrice);
+                            rowData.diffQty = round2(rowData.newQty - rowData.originalQty);
                             rowData.diffPrice = rowData.newPrice;
-                            rowData.diffTotal = rowData.diffQty * rowData.diffPrice;
+                            rowData.diffTotal = round2(rowData.diffQty * rowData.diffPrice);
                         }
                     } else {
                         const myLeaves = targetLeaves.filter(leaf => leaf.code.startsWith(item.code));
@@ -499,9 +500,6 @@
                         // 稅金計算使用 round2
                         row0B.originalPrice = round2(row01.originalPrice * 0.05); row0B.originalTotal = row0B.originalPrice;
                         row0B.newPrice = round2(row01.newPrice * 0.05); row0B.newTotal = row0B.newPrice; row0B.diffTotal = row0B.newTotal - row0B.originalTotal;
-                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 0)`; // Excel 公式仍保留整數或依使用者需求修改，但既然全表改2位，這裡建議公式改為 ,2
-                        row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 0)`;
-                        // 更新：既然使用者要求所有計算2位，修正Excel公式
                         row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 2)`;
                         row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 2)`;
                     }
@@ -783,7 +781,7 @@
 
             return (
                 <div style={{ fontFamily: 'sans-serif', padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-                    <h1 style={{ color: 'black' }}>工程預算變更工具 V1.4</h1>
+                    <h1 style={{ color: 'black' }}>工程預算變更工具</h1>
                     <hr />
                     
                     <div style={{ marginBottom: '20px' }}>
@@ -827,18 +825,47 @@
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {inputData.map((row, idx) => (
-                                        <tr key={idx}>
-                                            <td>{row['工程項目']}</td><td>{row['項目名稱']}</td>
-                                            <td align="center">{row['單位']}</td><td align="right">{row['數量']}</td>
-                                            <td style={{ background: '#e6f7ff' }}>
-                                                <input type="text" value={row[changeQtyKey] !== undefined ? row[changeQtyKey] : ''} onChange={(e) => handleInputChange(idx, changeQtyKey, e.target.value)} style={{ width: '90%' }} />
-                                            </td>
-                                            <td align="center" style={{ background: '#fff7e6' }}>
-                                                <input type="checkbox" checked={!!row[ratioKey]} onChange={(e) => handleInputChange(idx, ratioKey, e.target.checked ? 'V' : '')} />
-                                            </td>
-                                        </tr>
-                                    ))}
+                                    {(() => {
+                                        const rowsWithIndex = inputData.map((row, idx) => ({ ...row, _origIdx: idx }));
+                                        const existing = rowsWithIndex.filter(r => parseNum(r['數量']) !== 0);
+                                        const newItems = rowsWithIndex.filter(r => parseNum(r['數量']) === 0);
+
+                                        return (
+                                            <>
+                                                {existing.map(row => (
+                                                    <tr key={row._origIdx}>
+                                                        <td>{row['工程項目']}</td><td>{row['項目名稱']}</td>
+                                                        <td align="center">{row['單位']}</td><td align="right">{row['數量']}</td>
+                                                        <td style={{ background: '#e6f7ff' }}>
+                                                            <input type="text" value={row[changeQtyKey] !== undefined ? row[changeQtyKey] : ''} onChange={(e) => handleInputChange(row._origIdx, changeQtyKey, e.target.value)} style={{ width: '90%' }} />
+                                                        </td>
+                                                        <td align="center" style={{ background: '#fff7e6' }}>
+                                                            <input type="checkbox" checked={!!row[ratioKey]} onChange={(e) => handleInputChange(row._origIdx, ratioKey, e.target.checked ? 'V' : '')} />
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                                
+                                                {newItems.length > 0 && (
+                                                    <tr style={{ background: '#d9d9d9' }}>
+                                                        <td colSpan="6" align="center" style={{ fontWeight: 'bold', padding: '8px' }}>--- 新增工項 (原數量為 0) ---</td>
+                                                    </tr>
+                                                )}
+
+                                                {newItems.map(row => (
+                                                    <tr key={row._origIdx} style={{ background: '#eaf4db' }}>
+                                                        <td>{row['工程項目']}</td><td>{row['項目名稱']}</td>
+                                                        <td align="center">{row['單位']}</td><td align="right" style={{ color: '#999' }}>{row['數量']}</td>
+                                                        <td style={{ background: '#cceeff' }}>
+                                                            <input type="text" value={row[changeQtyKey] !== undefined ? row[changeQtyKey] : ''} onChange={(e) => handleInputChange(row._origIdx, changeQtyKey, e.target.value)} style={{ width: '90%' }} />
+                                                        </td>
+                                                        <td align="center" style={{ background: '#fff0d0' }}>
+                                                            <input type="checkbox" checked={!!row[ratioKey]} onChange={(e) => handleInputChange(row._origIdx, ratioKey, e.target.checked ? 'V' : '')} />
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </>
+                                        );
+                                    })()}
                                 </tbody>
                             </table>
                         </div>
