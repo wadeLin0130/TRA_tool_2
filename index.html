@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>工程預算變更工具 V1.1</title>
+    <title>工程預算變更工具 V1.4</title>
     <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -56,6 +56,11 @@
                 }
             }, []);
 
+            // 輔助函式：四捨五入至小數點後 2 位
+            const round2 = (num) => {
+                return Math.round((num + Number.EPSILON) * 100) / 100;
+            };
+
             const parseNum = (val) => {
                 if (val === undefined || val === null || val === '') return 0;
                 if (typeof val === 'number') return val;
@@ -64,10 +69,17 @@
                 return isNaN(num) ? 0 : num;
             };
 
+            // 格式化顯示數字 (千分位 + 2位小數)
+            const formatNum = (num) => {
+                if (num === undefined || num === null || num === '') return '';
+                return num.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            };
+
             const downloadTemplate = () => {
                 if (!window.XLSX) return;
+                // 1. 簡化範本：移除金額合計
                 const ws = window.XLSX.utils.aoa_to_sheet([
-                    ["工程項目", "項目名稱", "單位", "數量", "單價", "金額合計", "變更後數量", "按比例"]
+                    ["工程項目", "項目名稱", "單位", "數量", "單價", "變更後數量", "按比例"]
                 ]);
                 const wb = window.XLSX.utils.book_new();
                 window.XLSX.utils.book_append_sheet(wb, ws, "空白預算書");
@@ -78,7 +90,7 @@
                 const file = e.target.files[0];
                 if (!file) return;
                 setFileName(file.name);
-                setStatusMsg('讀取中...');
+                setStatusMsg('讀取與清洗資料中...');
                 
                 const reader = new FileReader();
                 reader.readAsArrayBuffer(file);
@@ -89,6 +101,7 @@
                         const ws = wb.Sheets[wb.SheetNames[0]];
                         let json = window.XLSX.utils.sheet_to_json(ws);
                         
+                        // 基礎清洗：Trim keys
                         json = json.map(row => {
                             const newRow = {};
                             Object.keys(row).forEach(key => newRow[key.trim()] = row[key]);
@@ -96,6 +109,7 @@
                         });
 
                         if (json.length === 0) { alert("檔案內容為空"); setStatusMsg(''); return; }
+                        // 允許簡化輸入，不強制檢查「金額合計」
                         if (!json[0]['工程項目']) { alert('錯誤：找不到「工程項目」欄位'); setStatusMsg(''); return; }
 
                         const keys = Object.keys(json[0]);
@@ -104,15 +118,110 @@
                         
                         setChangeQtyKey(foundChangeKey);
                         setRatioKey(foundRatioKey);
-                        setInputData(json);
+
+                        // --- 資料前處理 (Data Pre-processing) ---
+                        // 2. 系統自行計算純子項總價，並補全 01/011
+                        const processedData = preprocessInputData(json, foundChangeKey, foundRatioKey);
+
+                        setInputData(processedData);
                         setStep(2);
-                        setStatusMsg(`已讀取 ${json.length} 筆`);
+                        setStatusMsg(`已讀取並處理 ${processedData.length} 筆資料`);
                     } catch (error) { 
                         console.error(error); 
-                        alert("讀取失敗");
+                        alert("讀取失敗：" + error.message);
                         setStatusMsg('');
                     }
                 };
+            };
+
+            // 輸入資料預處理邏輯 (清洗時計算父項)
+            const preprocessInputData = (rawData, changeKey, ratioKey) => {
+                // 1. 轉換為標準格式物件
+                let items = rawData.map((row, idx) => ({
+                    id: idx,
+                    code: String(row['工程項目'] || '').trim(),
+                    name: row['項目名稱'] || '',
+                    unit: row['單位'] || '',
+                    qty: parseNum(row['數量']),
+                    price: parseNum(row['單價']),
+                    total: 0, // 待計算
+                    changeQtyVal: row[changeKey],
+                    isRatioItem: !!row[ratioKey],
+                    rawRow: row // 保留原始參照
+                }));
+
+                // 2. 檢查並補全 01 與 011
+                const hasCode = (c) => items.some(i => i.code === c);
+                
+                // 4. 如果沒有 011，自動新增
+                if (!hasCode('011')) {
+                    items.push({
+                        id: 'auto_011', code: '011', name: '包工費', unit: '式', qty: 1, price: 0, total: 0, 
+                        changeQtyVal: '', isRatioItem: false, rawRow: {}
+                    });
+                }
+                // 4. 如果沒有 01，自動新增
+                if (!hasCode('01')) {
+                    items.push({
+                        id: 'auto_01', code: '01', name: '發包工程費', unit: '式', qty: 1, price: 0, total: 0, 
+                        changeQtyVal: '', isRatioItem: false, rawRow: {}
+                    });
+                }
+
+                // 重新排序
+                items.sort((a, b) => a.code.localeCompare(b.code));
+
+                // 識別純子項 (Leaf)
+                const allCodes = items.map(i => i.code);
+                items.forEach(item => {
+                    const isLeaf = !allCodes.some(other => other.startsWith(item.code) && other !== item.code);
+                    item.isLeaf = isLeaf;
+                });
+
+                // 3. 計算金額
+                // 先算純子項
+                items.forEach(item => {
+                    if (item.isLeaf) {
+                        // 2. 純子項金額 = 數量 * 單價 (使用 round2 計算至小數點後2位)
+                        item.total = round2(item.qty * item.price);
+                    } else {
+                        item.total = 0; // 父項先歸零，等等累加
+                    }
+                });
+
+                // 3. 計算所有父項金額 (由長代碼到短代碼，Bottom-up)
+                const sortedByLenDesc = [...items].sort((a, b) => b.code.length - a.code.length);
+                
+                sortedByLenDesc.forEach(child => {
+                    const potentialParent = sortedByLenDesc.find(p => 
+                        child.code.startsWith(p.code) && 
+                        child.code !== p.code &&
+                        !sortedByLenDesc.some(middle => middle.code.startsWith(p.code) && child.code.startsWith(middle.code) && middle.code !== p.code && middle.code !== child.code)
+                    );
+
+                    if (potentialParent) {
+                        // 父項累加也要保持 2 位小數精度
+                        potentialParent.total = round2(potentialParent.total + child.total);
+                        // 父項的單價通常等於總價(如果是式)
+                        if (potentialParent.unit === '式' && potentialParent.qty === 1) {
+                            potentialParent.price = potentialParent.total;
+                        }
+                    }
+                });
+
+                // 將計算結果寫回原始結構供 UI 顯示
+                return items.map(item => {
+                    const newRow = { ...item.rawRow };
+                    newRow['工程項目'] = item.code;
+                    newRow['項目名稱'] = item.name;
+                    newRow['單位'] = item.unit;
+                    newRow['數量'] = item.qty;
+                    newRow['單價'] = item.price;
+                    newRow['金額合計'] = item.total; // 供 UI 顯示 (已是 2 位小數精度)
+                    newRow[changeKey] = item.changeQtyVal;
+                    if(item.isRatioItem) newRow[ratioKey] = 'V';
+                    return newRow;
+                });
             };
 
             const handleInputChange = (index, field, value) => {
@@ -245,6 +354,14 @@
                 });
             };
 
+            // 5. 預先計算基礎項目 (011) 的總金額，供按比例計算使用
+            const calculateBaseItemTotal = (allItems) => {
+                const baseItem = allItems.find(i => i.code === BASE_ITEM_CODE);
+                if (!baseItem) return 1; 
+                // 使用 preprocess 計算出來的 originalTotal，它已經是 round2 過的結果
+                return baseItem.originalTotal || 1;
+            };
+
             const generateOutput = () => {
                 const allItems = inputData.map((row, index) => ({
                     id: index,
@@ -253,7 +370,8 @@
                     unit: row['單位'],
                     originalQty: parseNum(row['數量']),
                     originalPrice: parseNum(row['單價']),
-                    originalTotal: parseNum(row['金額合計'] || row['金額']),
+                    // 2. 使用系統計算過的金額 (來自 preprocessInputData)，保留2位小數
+                    originalTotal: parseNum(row['金額合計']), 
                     changeQtyVal: row[changeQtyKey],
                     isRatioItem: !!row[ratioKey]
                 }));
@@ -270,8 +388,9 @@
                 const rawCat3 = generateRawCategoryItems(allItems, 'DEDUCT');
                 const rawCat4 = generateRawCategoryItems(allItems, 'NEW_ITEM');
 
-                const baseItemOriginal = allItems.find(i => i.code === BASE_ITEM_CODE);
-                const totalBaseAmount = baseItemOriginal ? baseItemOriginal.originalTotal : 1; 
+                // 5. 獲取正確的包工費基底金額 (2位小數)
+                const totalBaseAmount = calculateBaseItemTotal(allItems);
+
                 const findBaseAmountInCategory = (catItems) => { const item = catItems.find(i => i.code === BASE_ITEM_CODE); return item ? item.newTotal : 0; };
                 const findBaseOriginalInCat = (catItems) => { const item = catItems.find(i => i.code === BASE_ITEM_CODE); return item ? item.originalTotal : 0; };
                 const injectBaseInfo = (items, baseNew, baseOriginal) => {
@@ -287,9 +406,10 @@
                     items.forEach(item => {
                         if (item.needsRatioCalc) {
                             const ratioNew = item.categoryBaseNewTotal / totalBaseAmount;
-                            item.newPrice = Math.round(item.rawOriginalTotal * ratioNew); item.newTotal = item.newPrice; item.newQty = 1;
+                            // 使用 round2 替代 Math.round
+                            item.newPrice = round2(item.rawOriginalTotal * ratioNew); item.newTotal = item.newPrice; item.newQty = 1;
                             const ratioOriginal = item.categoryBaseOriginalTotal / totalBaseAmount;
-                            item.originalPrice = Math.round(item.rawOriginalTotal * ratioOriginal); item.originalTotal = item.originalPrice; item.originalQty = 1;
+                            item.originalPrice = round2(item.rawOriginalTotal * ratioOriginal); item.originalTotal = item.originalPrice; item.originalQty = 1;
                             item.diffQty = 0; item.diffPrice = item.newPrice - item.originalPrice; item.diffTotal = item.diffPrice;
                             item.formulaNewPrice = `${item.rawOriginalTotal} * I_BASE / ${totalBaseAmount}`;
                             item.formulaOriginalPrice = `${item.rawOriginalTotal} * F_BASE / ${totalBaseAmount}`;
@@ -311,16 +431,17 @@
                                 const sumOriginal = directChildren.reduce((acc, c) => acc + c.originalTotal, 0);
                                 const sumNew = directChildren.reduce((acc, c) => acc + c.newTotal, 0);
                                 const sumDiff = directChildren.reduce((acc, c) => acc + c.diffTotal, 0);
-                                item.originalTotal = Math.round(sumOriginal); item.originalPrice = Math.round(sumOriginal);
-                                item.newTotal = Math.round(sumNew); item.newPrice = Math.round(sumNew);
-                                item.diffTotal = Math.round(sumDiff); item.diffPrice = Math.round(sumNew);
+                                // 使用 round2
+                                item.originalTotal = round2(sumOriginal); item.originalPrice = round2(sumOriginal);
+                                item.newTotal = round2(sumNew); item.newPrice = round2(sumNew);
+                                item.diffTotal = round2(sumDiff); item.diffPrice = round2(sumNew);
                             }
                         }
                     });
                 };
                 recalculateCategoryParents(rawCat1); recalculateCategoryParents(rawCat2); recalculateCategoryParents(rawCat3); recalculateCategoryParents(rawCat4);
 
-                let rowCursor = 3; // Start from row 3 because header takes 2 rows now
+                let rowCursor = 3; 
                 let finalOutput = [];
 
                 const processBlock = (title, items, categoryKey, bgColor) => {
@@ -359,8 +480,9 @@
                             const sumOriginal = sourceRows.reduce((acc, r) => acc + r.originalTotal, 0);
                             const sumNew = sourceRows.reduce((acc, r) => acc + r.newTotal, 0);
                             const sumDiff = sourceRows.reduce((acc, r) => acc + r.diffTotal, 0);
-                            rowData.originalPrice = Math.round(sumOriginal); rowData.originalTotal = Math.round(sumOriginal);
-                            rowData.newPrice = Math.round(sumNew); rowData.newTotal = Math.round(sumNew); rowData.diffTotal = Math.round(sumDiff);
+                            // 使用 round2
+                            rowData.originalPrice = round2(sumOriginal); rowData.originalTotal = round2(sumOriginal);
+                            rowData.newPrice = round2(sumNew); rowData.newTotal = round2(sumNew); rowData.diffTotal = round2(sumDiff);
                             if (sourceRows.length > 0) {
                                 const rowIndices = sourceRows.map(r => r.excelRow);
                                 rowData.formulaOriginalPrice = '=' + rowIndices.map(r => `F${r}`).join('+');
@@ -374,9 +496,14 @@
                     const row0B = finalOutput.find(i => i.isArtificialTax);
                     const row01 = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
                     if (row0B && row01) {
-                        row0B.originalPrice = Math.round(row01.originalPrice * 0.05); row0B.originalTotal = row0B.originalPrice;
-                        row0B.newPrice = Math.round(row01.newPrice * 0.05); row0B.newTotal = row0B.newPrice; row0B.diffTotal = row0B.newTotal - row0B.originalTotal;
-                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 0)`; row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 0)`;
+                        // 稅金計算使用 round2
+                        row0B.originalPrice = round2(row01.originalPrice * 0.05); row0B.originalTotal = row0B.originalPrice;
+                        row0B.newPrice = round2(row01.newPrice * 0.05); row0B.newTotal = row0B.newPrice; row0B.diffTotal = row0B.newTotal - row0B.originalTotal;
+                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 0)`; // Excel 公式仍保留整數或依使用者需求修改，但既然全表改2位，這裡建議公式改為 ,2
+                        row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 0)`;
+                        // 更新：既然使用者要求所有計算2位，修正Excel公式
+                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 2)`;
+                        row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 2)`;
                     }
 
                     const row01Summary = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
@@ -442,12 +569,16 @@
                     right: { style: "thin", color: { auto: 1 } }
                 };
 
-                const numFmt = "#,##0.00"; // 千分位，兩位小數
+                const numFmt = "#,##0.00"; 
+                
+                // 統一字體設定
+                const baseFont = { name: "Noto Sans CJK TC Regular", sz: 14 };
 
                 const createCell = (value, type, bgColor = null, bold = false, align = null) => {
                     const cell = { v: value, t: type };
-                    if (type === 'n') cell.z = numFmt; // 自動套用數字格式
+                    if (type === 'n') cell.z = numFmt; 
                     cell.s = {
+                        font: { ...baseFont, bold: bold },
                         alignment: { wrapText: true, vertical: "center" },
                         border: thinBorder
                     };
@@ -542,19 +673,19 @@
 
                         let cellMemo = { v: '', t: 's' };
 
-                        // 套用樣式到這些特殊 Cell
+                        // 套用樣式到這些特殊 Cell，確保字體統一
                         [cellOriginalAmount, cellNewAmount, cellDiffAmountUnified, cellOriginalPrice, cellNewPrice, cellDiffPrice, cellDiffQty, cellMemo].forEach(c => {
-                            c.s = { font: { name: "Noto Sans CJK TC Regular", sz: 14}, border: thinBorder, alignment: { vertical: "center" } };
+                            c.s = { font: { ...baseFont, bold: isBold }, border: thinBorder, alignment: { vertical: "center" } };
                             if (bgColor) c.s.fill = { fgColor: { rgb: bgColor.replace('#', '') } };
                         });
 
                         // 總計列處理
                         if (item.isTotalRow) {
-                            const cellTotalOriginal = { f: item.formulaOriginalTotal, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
-                            const cellTotalNew = { f: item.formulaNewTotal, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
+                            const totalStyle = { font: { ...baseFont, bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder };
                             
-                            // 總計列的 L 也改為 I-F (雖然原先是 Sum(L)，但 I-F 是數學等價且符合使用者 "統一所有" 的需求)
-                            const cellTotalDiff = { f: `I${r}-F${r}`, t: 'n', z: numFmt, s: { font: { bold: true }, fill: { fgColor: { rgb: "D9D9D9" } }, border: thinBorder } };
+                            const cellTotalOriginal = { f: item.formulaOriginalTotal, t: 'n', z: numFmt, s: totalStyle };
+                            const cellTotalNew = { f: item.formulaNewTotal, t: 'n', z: numFmt, s: totalStyle };
+                            const cellTotalDiff = { f: `I${r}-F${r}`, t: 'n', z: numFmt, s: totalStyle };
                             
                             const emptyStyled = (bg) => createCell("", 's', bg, true);
 
@@ -630,11 +761,19 @@
                 window.XLSX.utils.sheet_add_aoa(ws, wsData, { origin: "A1" });
                 ws['!merges'] = merges;
                 ws['!cols'] = [
-                    { wch: 15 }, { wch: 40 }, { wch: 8 }, 
-                    { wch: 10 }, { wch: 12 }, { wch: 15 }, 
-                    { wch: 10 }, { wch: 12 }, { wch: 15 }, 
-                    { wch: 10 }, { wch: 10 }, { wch: 10 },
-                    { wch: 60 }
+                    { wch: 15 }, // A
+                    { wch: 40 }, // B
+                    { wch: 8 },  // C
+                    { wch: 10 }, // D
+                    { wch: 25 }, // E
+                    { wch: 25 }, // F
+                    { wch: 10 }, // G
+                    { wch: 25 }, // H
+                    { wch: 25 }, // I
+                    { wch: 10 }, // J
+                    { wch: 25 }, // K
+                    { wch: 25 }, // L
+                    { wch: 60 }  // M
                 ];
                 window.XLSX.utils.book_append_sheet(wb, ws, "變更明細表");
                 window.XLSX.writeFile(wb, `變更明細_${fileName || 'export.xlsx'}`);
@@ -644,7 +783,7 @@
 
             return (
                 <div style={{ fontFamily: 'sans-serif', padding: '20px', maxWidth: '1200px', margin: '0 auto' }}>
-                    <h1 style={{ color: 'black' }}>工程預算變更工具 V1.1</h1>
+                    <h1 style={{ color: 'black' }}>工程預算變更工具 V1.4</h1>
                     <hr />
                     
                     <div style={{ marginBottom: '20px' }}>
@@ -683,7 +822,7 @@
                                 <thead style={{ background: '#eee' }}>
                                     <tr>
                                         <th style={{ width: '10%' }}>項目</th><th>名稱</th><th style={{ width: '5%' }}>單位</th><th style={{ width: '15%' }}>原數量</th>
-                                        <th style={{ background: '#e6f7ff', width: '15%' }}>變更後數量</th>
+                                        <th style={{ background: '#e6f7ff', width: '100px' }}>變更後數量</th>
                                         <th style={{ background: '#fff7e6', width: '15%'  }}>按比例</th>
                                     </tr>
                                 </thead>
@@ -727,13 +866,13 @@
                                     <tbody>
                                         {outputData.map((row, idx) => {
                                             if (row.isHeader) return <tr key={idx} style={{ background: row.bgColor }}><td></td><td colSpan="11"><b>{row.title}</b></td></tr>;
-                                            if (row.isTotalRow) return <tr key={idx} style={{ background: row.bgColor, fontWeight: 'bold' }}><td colSpan="5" align="right">總計</td><td align="right">{Math.round(row.originalTotal).toLocaleString()}</td><td colSpan="2"></td><td align="right">{Math.round(row.newTotal).toLocaleString()}</td><td colSpan="2"></td><td align="right">{Math.round(row.diffTotal).toLocaleString()}</td></tr>;
+                                            if (row.isTotalRow) return <tr key={idx} style={{ background: row.bgColor, fontWeight: 'bold' }}><td colSpan="5" align="right">總計</td><td align="right">{formatNum(row.originalTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.newTotal)}</td><td colSpan="2"></td><td align="right">{formatNum(row.diffTotal)}</td></tr>;
                                             return (
                                                 <tr key={idx} style={{ background: row.isRatioItem ? '#fff5e6' : (row.isSummaryItem ? '#fcf8e3' : '#fff') }}>
                                                     <td>{row.code}</td><td>{row.name}</td>
-                                                    <td align="right">{row.isSummaryItem ? '' : row.originalQty}</td><td align="right">{row.isSummaryItem ? '' : row.originalPrice?.toLocaleString()}</td><td align="right">{Math.round(row.originalTotal)?.toLocaleString()}</td>
-                                                    <td align="right">{row.isSummaryItem ? '' : row.newQty}</td><td align="right">{row.isSummaryItem ? '' : row.newPrice?.toLocaleString()}</td><td align="right">{Math.round(row.newTotal)?.toLocaleString()}</td>
-                                                    <td align="right">{row.isSummaryItem ? '' : row.diffQty}</td><td align="right">{row.isSummaryItem ? '' : row.diffPrice?.toLocaleString()}</td><td align="right">{Math.round(row.diffTotal)?.toLocaleString()}</td>
+                                                    <td align="right">{row.isSummaryItem ? '' : row.originalQty}</td><td align="right">{row.isSummaryItem ? '' : formatNum(row.originalPrice)}</td><td align="right">{formatNum(row.originalTotal)}</td>
+                                                    <td align="right">{row.isSummaryItem ? '' : row.newQty}</td><td align="right">{row.isSummaryItem ? '' : formatNum(row.newPrice)}</td><td align="right">{formatNum(row.newTotal)}</td>
+                                                    <td align="right">{row.isSummaryItem ? '' : row.diffQty}</td><td align="right">{row.isSummaryItem ? '' : formatNum(row.diffPrice)}</td><td align="right">{formatNum(row.diffTotal)}</td>
                                                 </tr>
                                             );
                                         })}
@@ -751,5 +890,3 @@
     </script>
 </body>
 </html>
-
-
