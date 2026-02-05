@@ -288,7 +288,7 @@
                     targetLeaves = normalLeafItems.filter(item => {
                         if (item.originalQty === 0) return false;
                         const newVal = parseNum(item.changeQtyVal);
-                        return (item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null) && (newVal < item.originalQty);
+                        return (item.originalQty > 0 && item.changeQtyVal !== undefined && item.changeQtyVal !== '' && item.changeQtyVal !== null && parseNum(item.changeQtyVal) < item.originalQty);
                     });
                 }
 
@@ -384,13 +384,17 @@
                 }
 
                 setStatusMsg('計算中...');
-                const rawCat1 = generateRawCategoryItems(allItems, 'NO_CHANGE');
-                const rawCat2 = generateRawCategoryItems(allItems, 'ADD');
-                const rawCat3 = generateRawCategoryItems(allItems, 'DEDUCT');
-                const rawCat4 = generateRawCategoryItems(allItems, 'NEW_ITEM');
+                
+                // 1. 過濾輸入的營業稅 (0B)，改由系統產生
+                const itemsWithoutTax = allItems.filter(i => i.code !== '0B');
+
+                const rawCat1 = generateRawCategoryItems(itemsWithoutTax, 'NO_CHANGE');
+                const rawCat2 = generateRawCategoryItems(itemsWithoutTax, 'ADD');
+                const rawCat3 = generateRawCategoryItems(itemsWithoutTax, 'DEDUCT');
+                const rawCat4 = generateRawCategoryItems(itemsWithoutTax, 'NEW_ITEM');
 
                 // 5. 獲取正確的包工費基底金額 (2位小數)
-                const totalBaseAmount = calculateBaseItemTotal(allItems);
+                const totalBaseAmount = calculateBaseItemTotal(itemsWithoutTax);
 
                 const findBaseAmountInCategory = (catItems) => { const item = catItems.find(i => i.code === BASE_ITEM_CODE); return item ? item.newTotal : 0; };
                 const findBaseOriginalInCat = (catItems) => { const item = catItems.find(i => i.code === BASE_ITEM_CODE); return item ? item.originalTotal : 0; };
@@ -442,6 +446,38 @@
                 };
                 recalculateCategoryParents(rawCat1); recalculateCategoryParents(rawCat2); recalculateCategoryParents(rawCat3); recalculateCategoryParents(rawCat4);
 
+                // 2. 新增：在每個拆分區域底部加入 0B 營業稅
+                const appendTaxItem = (categoryItems) => {
+                    if (categoryItems.length === 0) return;
+                    
+                    // 找到該區域的 01 項目
+                    const item01 = categoryItems.find(i => i.code === '01');
+                    
+                    let taxOriginal = 0, taxNew = 0;
+                    if (item01) {
+                        // 使用 Math.round (取整數) 計算 5%
+                        taxOriginal = Math.round(item01.originalTotal * 0.05);
+                        taxNew = Math.round(item01.newTotal * 0.05);
+                    }
+
+                    const taxDiff = taxNew - taxOriginal;
+
+                    const taxItem = {
+                        code: '0B', name: '營業稅', unit: '式',
+                        originalQty: 1, originalPrice: taxOriginal, originalTotal: taxOriginal,
+                        newQty: 1, newPrice: taxNew, newTotal: taxNew,
+                        diffQty: 0, diffPrice: taxDiff, diffTotal: taxDiff,
+                        isLeaf: true,
+                        isTaxItem: true // 標記為稅項
+                    };
+                    categoryItems.push(taxItem);
+                };
+
+                appendTaxItem(rawCat1);
+                appendTaxItem(rawCat2);
+                appendTaxItem(rawCat3);
+                appendTaxItem(rawCat4);
+
                 let rowCursor = 3; 
                 let finalOutput = [];
 
@@ -459,10 +495,28 @@
                 processBlock('三、原契約追減', rawCat3, 'DEDUCT', '#FCE4D6');
                 processBlock('四、新增工項', rawCat4, 'NEW_ITEM', '#E7E6E6');
 
+                // 新增：處理拆分區域的 0B 公式
+                const categories = ['NO_CHANGE', 'ADD', 'DEDUCT', 'NEW_ITEM'];
+                categories.forEach(cat => {
+                    const catItems = finalOutput.filter(i => !i.isHeader && i.category === cat);
+                    const item01 = catItems.find(i => i.code === '01');
+                    const item0B = catItems.find(i => i.code === '0B' && i.isTaxItem);
+
+                    if (item01 && item0B) {
+                        // 設定公式： ROUND(01項金額 * 5%, 0)
+                        // F欄是金額 (Amount)
+                        item0B.formulaOriginalPrice = `=ROUND(F${item01.excelRow}*0.05, 0)`;
+                        
+                        // I欄是變更後金額 (New Amount)
+                        item0B.formulaNewPrice = `=ROUND(I${item01.excelRow}*0.05, 0)`;
+                    }
+                });
+
                 const addSummaryBlock = () => {
                     finalOutput.push({ isHeader: true, title: '五、總表', category: 'SUMMARY', bgColor: '#FFF2CC' });
                     rowCursor++;
-                    const has0B = allItems.some(i => i.code === '0B');
+                    
+                    // 總表目標包含 0B
                     const summaryTargets = [...SUMMARY_CODES];
                     if (!summaryTargets.includes('0B')) summaryTargets.push('0B'); 
 
@@ -471,41 +525,40 @@
                             code: code, name: '', unit: '', excelRow: rowCursor, category: 'SUMMARY', isSummaryItem: true, 
                             originalQty: 1, originalPrice: 0, originalTotal: 0, newQty: 1, newPrice: 0, newTotal: 0, diffQty: 0, diffPrice: 0, diffTotal: 0, formulaOriginalPrice: null, formulaNewPrice: null
                         };
-                        const baseItem = allItems.find(i => i.code === code);
-                        if (baseItem) { rowData.name = baseItem.name; rowData.unit = baseItem.unit; } else if (code === '0B') { rowData.name = '營業稅'; rowData.unit = '式'; }
+                        const baseItem = itemsWithoutTax.find(i => i.code === code); // 用 itemsWithoutTax 找名稱
+                        if (baseItem) { rowData.name = baseItem.name; rowData.unit = baseItem.unit; } 
+                        else if (code === '0B') { rowData.name = '營業稅'; rowData.unit = '式'; }
 
-                        if (code === '0B' && !has0B) {
-                            rowData.isArtificialTax = true; 
-                        } else {
-                            const sourceRows = finalOutput.filter(item => !item.isHeader && item.category !== 'SUMMARY' && item.code === code);
-                            const sumOriginal = sourceRows.reduce((acc, r) => acc + r.originalTotal, 0);
-                            const sumNew = sourceRows.reduce((acc, r) => acc + r.newTotal, 0);
-                            const sumDiff = sourceRows.reduce((acc, r) => acc + r.diffTotal, 0);
-                            // 使用 round2
-                            rowData.originalPrice = round2(sumOriginal); rowData.originalTotal = round2(sumOriginal);
-                            rowData.newPrice = round2(sumNew); rowData.newTotal = round2(sumNew); rowData.diffTotal = round2(sumDiff);
-                            if (sourceRows.length > 0) {
-                                const rowIndices = sourceRows.map(r => r.excelRow);
-                                rowData.formulaOriginalPrice = '=' + rowIndices.map(r => `F${r}`).join('+');
-                                rowData.formulaNewPrice = '=' + rowIndices.map(r => `I${r}`).join('+');
-                            }
+                        // 總表彙總邏輯：直接加總各拆分區的同代碼項目
+                        // 因為我們已經把 0B 加到各拆分區了，所以這裡不需要特殊處理，直接加總即可
+                        const sourceRows = finalOutput.filter(item => !item.isHeader && item.category !== 'SUMMARY' && item.code === code);
+                        const sumOriginal = sourceRows.reduce((acc, r) => acc + r.originalTotal, 0);
+                        const sumNew = sourceRows.reduce((acc, r) => acc + r.newTotal, 0);
+                        const sumDiff = sourceRows.reduce((acc, r) => acc + r.diffTotal, 0);
+                        // 使用 round2
+                        rowData.originalPrice = round2(sumOriginal); rowData.originalTotal = round2(sumOriginal);
+                        rowData.newPrice = round2(sumNew); rowData.newTotal = round2(sumNew); rowData.diffTotal = round2(sumDiff);
+                        if (sourceRows.length > 0) {
+                            const rowIndices = sourceRows.map(r => r.excelRow);
+                            rowData.formulaOriginalPrice = '=' + rowIndices.map(r => `F${r}`).join('+');
+                            rowData.formulaNewPrice = '=' + rowIndices.map(r => `I${r}`).join('+');
                         }
+                        
                         finalOutput.push(rowData);
                         rowCursor++;
                     });
 
-                    const row0B = finalOutput.find(i => i.isArtificialTax);
-                    const row01 = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
-                    if (row0B && row01) {
-                        // 稅金計算使用 round2
-                        row0B.originalPrice = round2(row01.originalPrice * 0.05); row0B.originalTotal = row0B.originalPrice;
-                        row0B.newPrice = round2(row01.newPrice * 0.05); row0B.newTotal = row0B.newPrice; row0B.diffTotal = row0B.newTotal - row0B.originalTotal;
-                        row0B.formulaOriginalPrice = `=ROUND(F${row01.excelRow}*0.05, 2)`;
-                        row0B.formulaNewPrice = `=ROUND(I${row01.excelRow}*0.05, 2)`;
-                    }
-
+                    // 3. 設定核對公式
                     const row01Summary = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '01');
                     const row0BSummary = finalOutput.find(i => i.category === 'SUMMARY' && i.code === '0B');
+                    
+                    if (row01Summary && row0BSummary) {
+                        // 在 0B 列加入驗證公式
+                        // I246 (01 New Total) * 5% rounded vs I251 (0B New Total)
+                        // 使用 excelRow 動態生成公式
+                        row0BSummary.validationFormula = `IF(ROUND(I${row01Summary.excelRow}*0.05,0)=I${row0BSummary.excelRow},"核對無誤","應為"&TEXT(ROUND(I${row01Summary.excelRow}*0.05,0),"#,##0")&"請調整")`;
+                    }
+
                     const totalRow = {
                         code: '', name: '總計', unit: '', excelRow: rowCursor, category: 'SUMMARY', isTotalRow: true, bgColor: '#D9D9D9',
                         originalQty: '', originalPrice: '', originalTotal: (row01Summary?.originalTotal || 0) + (row0BSummary?.originalTotal || 0),
@@ -670,6 +723,29 @@
                         let cellDiffAmountUnified = { t: 'n', z: numFmt, f: `I${r}-F${r}` };
 
                         let cellMemo = { v: '', t: 's' };
+                        
+                        // 檢查是否有核對公式 (總表營業稅)
+                        if (item.validationFormula) {
+                            cellMemo = { f: item.validationFormula, t: 's' };
+                        }
+
+                        // 公式邏輯處理
+                        if (item.isSummaryItem) {
+                            if (item.formulaOriginalPrice) {
+                                cellOriginalPrice.f = item.formulaOriginalPrice; delete cellOriginalPrice.v;
+                                cellNewPrice.f = item.formulaNewPrice; delete cellNewPrice.v;
+                            }
+                        } else if (item.isTaxItem && item.formulaOriginalPrice) {
+                            // 新增：拆分區域的 0B 營業稅公式
+                            cellOriginalPrice.f = item.formulaOriginalPrice; delete cellOriginalPrice.v;
+                            cellNewPrice.f = item.formulaNewPrice; delete cellNewPrice.v;
+                        } else if (item.isRatioItem && item.formulaNewPrice) {
+                            cellOriginalPrice.f = `=ROUND(${item.formulaOriginalPrice}, 2)`; delete cellOriginalPrice.v;
+                            cellNewPrice.f = `=ROUND(${item.formulaNewPrice}, 2)`; delete cellNewPrice.v;
+                        } else if (!item.isLeaf && item.formulaPrice) {
+                            cellOriginalPrice.f = item.formulaPrice; delete cellOriginalPrice.v;
+                            cellNewPrice.f = item.formulaPrice.replace(/F/g, 'I'); delete cellNewPrice.v;
+                        }
 
                         // 套用樣式到這些特殊 Cell，確保字體統一
                         [cellOriginalAmount, cellNewAmount, cellDiffAmountUnified, cellOriginalPrice, cellNewPrice, cellDiffPrice, cellDiffQty, cellMemo].forEach(c => {
@@ -706,21 +782,7 @@
                             return;
                         }
 
-                        // 公式邏輯處理
-                        if (item.isSummaryItem) {
-                            if (item.formulaOriginalPrice) {
-                                cellOriginalPrice.f = item.formulaOriginalPrice; delete cellOriginalPrice.v;
-                                cellNewPrice.f = item.formulaNewPrice; delete cellNewPrice.v;
-                            }
-                        } else if (item.isRatioItem && item.formulaNewPrice) {
-                            cellOriginalPrice.f = `=ROUND(${item.formulaOriginalPrice}, 2)`; delete cellOriginalPrice.v;
-                            cellNewPrice.f = `=ROUND(${item.formulaNewPrice}, 2)`; delete cellNewPrice.v;
-                        } else if (!item.isLeaf && item.formulaPrice) {
-                            cellOriginalPrice.f = item.formulaPrice; delete cellOriginalPrice.v;
-                            cellNewPrice.f = item.formulaPrice.replace(/F/g, 'I'); delete cellNewPrice.v;
-                        }
-
-                        if (!item.isSummaryItem && !item.isRatioItem && !item.isTotalRow && item.isLeaf) {
+                        if (!item.isSummaryItem && !item.isRatioItem && !item.isTotalRow && item.isLeaf && !item.isTaxItem) {
                             if (['ADD', 'DEDUCT', 'NEW_ITEM'].includes(item.category)) {
                                 const fmt = (ref) => `IF(MOD(${ref},1)=0,TEXT(${ref},"#,###"),TEXT(${ref},"#,###.##"))`;
                                 let formulaStr = "";
@@ -917,4 +979,3 @@
     </script>
 </body>
 </html>
-
